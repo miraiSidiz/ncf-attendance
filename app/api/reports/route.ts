@@ -24,32 +24,41 @@ export async function GET(request: Request) {
       include: { student: true }
     })
 
-    const attendanceMap = new Map(attendances.map(a => [a.studentId, a]))
+    // group attendances by studentId and sessionType
+    const grouped = attendances.reduce((acc, a) => {
+      if (!acc[a.studentId]) acc[a.studentId] = {}
+      acc[a.studentId][a.sessionType || 'morning'] = a
+      return acc
+    }, {} as Record<string, Record<string, any>>)
 
     const report = students.map(student => {
-      const attendance = attendanceMap.get(student.id)
-      let status = 'ABSENT'
-      let scannedAt = null
-      let timeOut = null
+      const g = grouped[student.id] || {}
+      const morning = g['morning'] || null
+      const afternoon = g['afternoon'] || null
 
-      if (attendance) {
-        scannedAt = attendance.scannedAt ?? null
-        timeOut = attendance.timeOut ?? null
+      const morningId = morning?.id ?? null
+      const morningIn = morning?.scannedAt ?? null
+      const morningOut = morning?.timeOut ?? null
+      const morningStatus = morning ? (morning.status ?? 'PRESENT') : 'ABSENT'
 
-        // base status from scannedAt (PRESENT/LATE)
-        status = attendance.status ?? 'PRESENT'
+      const afternoonId = afternoon?.id ?? null
+      const afternoonIn = afternoon?.scannedAt ?? null
+      const afternoonOut = afternoon?.timeOut ?? null
+      const afternoonStatus = afternoon ? (afternoon.status ?? 'PRESENT') : 'ABSENT'
 
-        // if there is a timeOut earlier than event end, mark as EARLY_LEAVE
-        if (timeOut && new Date(timeOut) < new Date(event.endDate)) {
-          status = 'EARLY_LEAVE'
-        }
+      // determine overall status: prioritize PRESENT/LATE if any session has presence, EARLY_LEAVE if any session marked so, otherwise ABSENT
+      let overall = 'ABSENT'
+      if (morning || afternoon) {
+        if (morningStatus === 'EARLY_LEAVE' || afternoonStatus === 'EARLY_LEAVE') overall = 'EARLY_LEAVE'
+        else if (morningStatus === 'LATE' || afternoonStatus === 'LATE') overall = 'LATE'
+        else overall = 'PRESENT'
       }
 
       return {
         student,
-        status,
-        scannedAt,
-        timeOut
+        morning: { id: morningId, in: morningIn, out: morningOut, status: morningStatus },
+        afternoon: { id: afternoonId, in: afternoonIn, out: afternoonOut, status: afternoonStatus },
+        status: overall
       }
     })
 

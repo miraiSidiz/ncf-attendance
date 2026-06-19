@@ -336,6 +336,7 @@ export default function StudentsPage() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">#</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Photo
                   </th>
@@ -366,8 +367,9 @@ export default function StudentsPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {students.map((student) => (
+                {students.map((student, idx) => (
                   <tr key={student.id}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{idx + 1}</td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       {student.photo ? (
                         <img src={student.photo} alt={student.name} className="w-12 h-12 rounded-full object-cover" />

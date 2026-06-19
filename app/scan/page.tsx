@@ -49,10 +49,13 @@ export default function ScanPage() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [confirming, setConfirming] = useState(false)
   const [confirmStudent, setConfirmStudent] = useState<Student | null>(null)
+  const [confirmAction, setConfirmAction] = useState<'in' | 'out' | null>(null)
   const [pendingQr, setPendingQr] = useState<string | null>(null)
   const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null)
   const router = useRouter()
   const [deviceProbeResults, setDeviceProbeResults] = useState<Record<string,string>>({})
+  const [notFoundCount, setNotFoundCount] = useState(0)
+  const [toast, setToast] = useState<{ text: string; actionLabel?: string; action?: () => void } | null>(null)
 
   // Auto-detect session based on time of day
   useEffect(() => {
@@ -86,11 +89,12 @@ export default function ScanPage() {
       setConfirming(false)
       setConfirmStudent(null)
       setPendingQr(null)
+      setConfirmAction(null)
       return
     }
 
-    if (!pendingQr || !selectedEvent) {
-      setMessage({ text: 'Missing data for time-out', type: 'error' })
+    if (!pendingQr || !selectedEvent || !confirmAction) {
+      setMessage({ text: 'Missing data for confirmation', type: 'error' })
       setConfirming(false)
       return
     }
@@ -99,24 +103,26 @@ export default function ScanPage() {
       const res = await fetch('/api/attendance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ qrCode: pendingQr, eventId: selectedEvent, action: 'out', sessionType })
+        body: JSON.stringify({ qrCode: pendingQr, eventId: selectedEvent, action: confirmAction, sessionType })
       })
       if (res.ok) {
         const data = await res.json()
         setScannedStudent(data.student)
         setScannedAttendance(data.attendance)
-        setMessage({ text: `Time-out recorded for ${data.student.name}`, type: 'success' })
+        setMessage({ text: `${confirmAction === 'out' ? 'Time-out' : 'Time-in'} recorded for ${data.student.name}`, type: 'success' })
+        try { if (typeof navigator !== 'undefined' && (navigator as any).vibrate) (navigator as any).vibrate(50) } catch (e) {}
       } else {
         const data = await res.json()
-        setMessage({ text: data.error || 'Failed to record time-out', type: 'error' })
+        setMessage({ text: data.error || 'Failed to record attendance', type: 'error' })
       }
     } catch (err) {
       console.error(err)
-      setMessage({ text: 'Failed to record time-out', type: 'error' })
+      setMessage({ text: 'Failed to record attendance', type: 'error' })
     } finally {
       setConfirming(false)
       setConfirmStudent(null)
       setPendingQr(null)
+      setConfirmAction(null)
     }
   }
 
@@ -176,6 +182,14 @@ export default function ScanPage() {
     }
   }, [session])
 
+  // Show a friendly hint after several failed decode attempts
+  useEffect(() => {
+    if (notFoundCount >= 6) {
+      setMessage({ text: 'No QR detected — try moving the camera closer/farther, improving lighting, or switching camera.', type: 'error' })
+      setToast({ text: 'Try switching camera or capture a photo', actionLabel: 'Switch Camera', action: switchCamera })
+    }
+  }, [notFoundCount])
+
   const handleFileUpload = async (file: File | null) => {
     if (!file || !codeReaderRef.current) return
     try {
@@ -223,6 +237,20 @@ export default function ScanPage() {
     setDeviceProbeResults(results)
   }
 
+  const testDeviceAvailable = async (dId: string | null) => {
+    try {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !(navigator.mediaDevices as any).getUserMedia) return false
+      const constraints: any = dId
+        ? { video: { deviceId: { exact: dId }, facingMode: { ideal: 'environment' } } }
+        : { video: { facingMode: { ideal: 'environment' } } }
+      const stream = await (navigator.mediaDevices as any).getUserMedia(constraints)
+      stream.getTracks().forEach((t: MediaStreamTrack) => t.stop())
+      return true
+    } catch (e) {
+      return false
+    }
+  }
+
   const gatherDiagnostics = async () => {
     const result: any = {}
     try {
@@ -265,20 +293,7 @@ export default function ScanPage() {
       return
     }
 
-    const testDeviceAvailable = async (dId: string | null) => {
-      try {
-        if (typeof navigator === 'undefined' || !navigator.mediaDevices || !(navigator.mediaDevices as any).getUserMedia) return false
-        // Prefer environment-facing camera for mobile when no specific deviceId provided
-        const constraints: any = dId
-          ? { video: { deviceId: { exact: dId }, facingMode: { ideal: 'environment' } } }
-          : { video: { facingMode: { ideal: 'environment' } } }
-        const stream = await (navigator.mediaDevices as any).getUserMedia(constraints)
-        stream.getTracks().forEach((t: MediaStreamTrack) => t.stop())
-        return true
-      } catch (e) {
-        return false
-      }
-    }
+    
 
     const tryDevicesAndStart = async () => {
       // ensure we have an up-to-date device list
@@ -293,17 +308,37 @@ export default function ScanPage() {
       }
 
       const tryList = devices.length ? devices : []
-      for (const dev of tryList) {
+              for (const dev of tryList) {
         const ok = await testDeviceAvailable(dev.deviceId)
         if (ok) {
           setDeviceId(dev.deviceId)
           try {
             if (codeReaderRef.current && videoRef.current) {
               codeReaderRef.current.reset()
-              codeReaderRef.current.decodeFromVideoDevice(dev.deviceId, videoRef.current, (result, err) => {
-                if (result) handleScan(result.getText())
-                if (err) console.error(err)
-              })
+              // warm-up camera with higher resolution before handing to ZXing
+              try {
+                const hiResConstraints: any = { video: { deviceId: { exact: dev.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } } }
+                const tmpStream = await navigator.mediaDevices.getUserMedia(hiResConstraints)
+                // attach briefly to the video element to improve camera selection
+                if (videoRef.current) videoRef.current.srcObject = tmpStream
+                tmpStream.getTracks().forEach((t) => t.stop())
+              } catch (e) {
+                // ignore warm-up errors, continue to start ZXing
+              }
+                      codeReaderRef.current.decodeFromVideoDevice(dev.deviceId, videoRef.current, (result, err) => {
+                        if (result) {
+                          setNotFoundCount(0)
+                          handleScan(result.getText())
+                        }
+                        if (err) {
+                          // suppress noisy NotFound exceptions; track them to show a helpful hint
+                          if ((err as any)?.name === 'NotFoundException' || err instanceof NotFoundException) {
+                            setNotFoundCount(c => c + 1)
+                            return
+                          }
+                          console.error(err)
+                        }
+                      })
               setScanning(true)
               setMessage(null)
               return true
@@ -349,13 +384,31 @@ export default function ScanPage() {
         return
       }
 
+      // attempt a hi-res permission warmup to improve decode reliability
+      try {
+        const constraints: any = deviceId
+          ? { video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } } }
+          : { video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } } }
+        const warm = await navigator.mediaDevices.getUserMedia(constraints)
+        if (videoRef.current) videoRef.current.srcObject = warm
+        warm.getTracks().forEach((t) => t.stop())
+      } catch (e) {
+        // non-fatal; ZXing will still try with default constraints
+      }
+
       await codeReaderRef.current.decodeFromVideoDevice(deviceId ?? null, videoRef.current, async (result, err) => {
         if (result) {
+          setNotFoundCount(0)
           handleScan(result.getText())
         }
         if (err) {
-          console.error(err)
           const name = (err && err.name) || ''
+          // treat ZXing not-found exceptions as transient; count them and show a hint after a few
+          if ((err as any)?.name === 'NotFoundException' || err instanceof NotFoundException) {
+            setNotFoundCount(c => c + 1)
+            return
+          }
+          console.error(err)
           if (name === 'NotFoundError' || name === 'NotReadableError') {
             // attempt other cameras automatically
             const fallbackStarted = await tryDevicesAndStart()
@@ -397,8 +450,8 @@ export default function ScanPage() {
   const handleScan = async (qrCode: string) => {
     try {
       stopScanning()
-      // If forcing Time Out, fetch student info and show confirmation before sending
-      if (scanMode === 'out') {
+      // If forcing Time In/Out, fetch student info and show confirmation before sending
+      if (scanMode === 'out' || scanMode === 'in') {
         try {
           const studentsRes = await fetch('/api/students')
           const students = await studentsRes.json()
@@ -409,6 +462,7 @@ export default function ScanPage() {
           }
           setConfirmStudent(student)
           setPendingQr(qrCode)
+          setConfirmAction(scanMode)
           setConfirming(true)
           return
         } catch (err) {
@@ -432,6 +486,7 @@ export default function ScanPage() {
         // Choose message based on whether this was a time-in or time-out
         const acted = data.attendance?.timeOut ? 'Time-out recorded' : 'Attendance recorded'
         setMessage({ text: `${acted} for ${data.student.name}`, type: 'success' })
+        try { if (typeof navigator !== 'undefined' && (navigator as any).vibrate) (navigator as any).vibrate(50) } catch (e) {}
       } else {
         const data = await res.json()
         setMessage({ text: data.error || 'Failed to record attendance', type: 'error' })
@@ -439,6 +494,51 @@ export default function ScanPage() {
     } catch (error) {
       console.error(error)
       setMessage({ text: 'Failed to record attendance', type: 'error' })
+    }
+  }
+
+  const switchCamera = async () => {
+    if (!devices || devices.length <= 1) return
+    const idx = devices.findIndex(d => d.deviceId === deviceId)
+    const next = devices[(idx + 1) % devices.length]
+    setDeviceId(next.deviceId)
+    setNotFoundCount(0)
+    setToast(null)
+    // restart scanning to pick up the new device
+    if (scanning) {
+      stopScanning()
+      // give a small pause to allow reset
+      setTimeout(() => startScanning().catch(()=>{}), 300)
+    }
+  }
+
+  const handleCapture = async () => {
+    if (!videoRef.current || !codeReaderRef.current) return
+    try {
+      const video = videoRef.current
+      const w = video.videoWidth || 1280
+      const h = video.videoHeight || 720
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('Could not get canvas context')
+      ctx.drawImage(video, 0, 0, w, h)
+      const dataUrl = canvas.toDataURL('image/png')
+      const img = new Image()
+      img.src = dataUrl
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej })
+      try {
+        const result = await codeReaderRef.current.decodeFromImageElement(img)
+        if (result) {
+          handleScan(result.getText())
+        }
+      } catch (err) {
+        setMessage({ text: 'No QR detected in the captured photo. Try again or switch camera.', type: 'error' })
+      }
+    } catch (err) {
+      console.error('Capture failed', err)
+      setMessage({ text: 'Failed to capture photo for decoding.', type: 'error' })
     }
   }
 
@@ -716,6 +816,8 @@ export default function ScanPage() {
                 Stop Scanning
               </button>
             )}
+            <button onClick={handleCapture} className="ml-2 px-4 py-3 bg-gray-100 rounded">Capture Photo</button>
+            <button onClick={() => { setNotFoundCount(0); setToast(null); switchCamera() }} className="ml-2 px-4 py-3 bg-yellow-100 rounded">Switch Camera</button>
           </div>
 
           {/* Session selector */}
@@ -738,6 +840,15 @@ export default function ScanPage() {
           {message && (
             <div className={`mt-6 p-4 rounded-lg text-center ${message.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
               {message.text}
+            </div>
+          )}
+          {toast && (
+            <div className="fixed bottom-6 right-6 bg-white shadow-md rounded-lg p-3 flex items-center gap-3">
+              <div className="text-sm">{toast.text}</div>
+              {toast.action && (
+                <button onClick={toast.action} className="ml-2 px-3 py-1 bg-blue-600 text-white rounded text-sm">{toast.actionLabel || 'Action'}</button>
+              )}
+              <button onClick={() => setToast(null)} className="ml-2 text-xs text-gray-500">Dismiss</button>
             </div>
           )}
 
@@ -766,11 +877,11 @@ export default function ScanPage() {
           {confirming && confirmStudent && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
               <div className="bg-white rounded-lg p-6 w-full max-w-md">
-                <h3 className="text-lg font-semibold mb-4">Confirm Time Out</h3>
-                <p className="mb-4">Record time-out for <strong>{confirmStudent.name}</strong>?</p>
+                <h3 className="text-lg font-semibold mb-4">{confirmAction === 'out' ? 'Confirm Time Out' : 'Confirm Time In'}</h3>
+                <p className="mb-4">{confirmAction === 'out' ? `Record time-out for ` : `Record time-in for `}<strong>{confirmStudent.name}</strong>?</p>
                 <div className="flex gap-2">
                   <button onClick={() => confirmTimeOut(false)} className="flex-1 bg-gray-300 px-4 py-2 rounded">Cancel</button>
-                  <button onClick={() => confirmTimeOut(true)} className="flex-1 bg-red-600 text-white px-4 py-2 rounded">Confirm Time Out</button>
+                  <button onClick={() => confirmTimeOut(true)} className={`flex-1 px-4 py-2 rounded ${confirmAction === 'out' ? 'bg-red-600 text-white' : 'bg-green-600 text-white'}`}>{confirmAction === 'out' ? 'Confirm Time Out' : 'Confirm Time In'}</button>
                 </div>
               </div>
             </div>

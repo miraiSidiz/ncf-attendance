@@ -34,6 +34,7 @@ interface Attendance {
 export default function DashboardPage() {
   const { data: session, status } = useSession()
   const [events, setEvents] = useState<Event[]>([])
+  const [eventSummaries, setEventSummaries] = useState<any[]>([])
   const [selectedEventId, setSelectedEventId] = useState<string>('')
   const [attendances, setAttendances] = useState<Attendance[]>([])
   const [students, setStudents] = useState<Student[]>([])
@@ -82,11 +83,21 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (session) {
-      Promise.all([fetchEvents(), fetchStudents()]).then(() => {
+      Promise.all([fetchEvents(), fetchStudents(), fetchEventSummaries()]).then(() => {
         setLoading(false)
       })
     }
   }, [session])
+
+  const fetchEventSummaries = async () => {
+    try {
+      const res = await fetch('/api/dashboard')
+      const data = await res.json()
+      setEventSummaries(data.summary || [])
+    } catch (err) {
+      console.error('Failed to fetch event summaries', err)
+    }
+  }
 
   useEffect(() => {
     if (selectedEventId) {
@@ -148,6 +159,35 @@ export default function DashboardPage() {
       <Sidebar />
       <main className="ml-64 flex-1 p-8 bg-gray-50">
         <h1 className="text-3xl font-bold mb-6">Dashboard</h1>
+
+        {/* Event summaries table */}
+        <div className="mb-6 bg-white rounded-lg shadow-md p-4">
+          <h2 className="text-lg font-semibold mb-3">Event Summary</h2>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Event</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                  <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Late</th>
+                  <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Absent</th>
+                  <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Attendees</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {eventSummaries.map(s => (
+                  <tr key={s.event.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => { setSelectedEventId(s.event.id); fetchAttendances(s.event.id) }}>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{s.event.title}</td>
+                    <td className="px-4 py-3 text-sm text-gray-600">{new Date(s.event.startDate).toLocaleDateString()}</td>
+                    <td className="px-4 py-3 text-center text-sm text-orange-600 font-semibold">{s.lateCount}</td>
+                    <td className="px-4 py-3 text-center text-sm text-red-600 font-semibold">{s.absentCount}</td>
+                    <td className="px-4 py-3 text-center text-sm text-gray-700">{s.attendees}/{s.totalStudents}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
 
         {/* Active Event Banner */}
         {activeEvent && (
@@ -250,6 +290,45 @@ export default function DashboardPage() {
               )}
             </div>
           </div>
+        )}
+
+        {/* Per-course summary for selected event */}
+        {selectedEventId && eventSummaries.length > 0 && (
+          (() => {
+            const summary = eventSummaries.find(s => s.event.id === selectedEventId)
+            if (!summary) return null
+            return (
+              <div className="mt-6 bg-white rounded-lg shadow-md p-4">
+                <h2 className="text-lg font-semibold mb-3">Per-Course Summary</h2>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Course</th>
+                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Total</th>
+                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Morning Late</th>
+                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Morning Absent</th>
+                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Afternoon Late</th>
+                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Afternoon Absent</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {summary.courseStats.map((c: any) => (
+                        <tr key={c.course}>
+                          <td className="px-4 py-3 text-sm text-gray-900">{c.course}</td>
+                          <td className="px-4 py-3 text-center text-sm text-gray-700">{c.totalStudents}</td>
+                          <td className="px-4 py-3 text-center text-sm text-orange-600">{c.morningLate}</td>
+                          <td className="px-4 py-3 text-center text-sm text-red-600">{c.morningAbsent}</td>
+                          <td className="px-4 py-3 text-center text-sm text-orange-600">{c.afternoonLate}</td>
+                          <td className="px-4 py-3 text-center text-sm text-red-600">{c.afternoonAbsent}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          })()
         )}
 
         {!selectedEventId && (

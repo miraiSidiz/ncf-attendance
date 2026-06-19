@@ -21,7 +21,8 @@ export default function EventsPage() {
   const [showModal, setShowModal] = useState(false)
   const [deleteCandidate, setDeleteCandidate] = useState<Event | null>(null)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
-  const [formData, setFormData] = useState({ title: '', description: '', startDate: '', endDate: '' })
+  const [formData, setFormData] = useState({ title: '', description: '', startDate: '', endDate: '', morningStart: '', morningEnd: '', afternoonStart: '', afternoonEnd: '', useSessions: false })
+  const [durationDays, setDurationDays] = useState<number>(0)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [fetchLoading, setFetchLoading] = useState(false)
   const router = useRouter()
@@ -53,10 +54,65 @@ export default function EventsPage() {
     }
   }, [session])
 
+  const resetForm = () => {
+    setFormData({ title: '', description: '', startDate: '', endDate: '', morningStart: '', morningEnd: '', afternoonStart: '', afternoonEnd: '', useSessions: false })
+    setDurationDays(0)
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setFetchLoading(true)
     try {
+      // validate dates and session times
+      if (!formData.startDate || !formData.endDate) {
+        alert('Start and end date are required')
+        setFetchLoading(false)
+        return
+      }
+      const s = new Date(formData.startDate)
+      const eDate = new Date(formData.endDate)
+      if (isNaN(s.getTime()) || isNaN(eDate.getTime()) || s > eDate) {
+        alert('Invalid start/end dates')
+        setFetchLoading(false)
+        return
+      }
+      if (formData.useSessions) {
+        // if sessions enabled, validate morning and afternoon ranges if provided
+        if (formData.morningStart && formData.morningEnd) {
+          const ms = new Date(formData.morningStart)
+          const me = new Date(formData.morningEnd)
+          if (isNaN(ms.getTime()) || isNaN(me.getTime()) || ms >= me) {
+            alert('Invalid morning time range')
+            setFetchLoading(false)
+            return
+          }
+          if (ms < s || me > eDate) {
+            alert('Morning session must be within event start and end')
+            setFetchLoading(false)
+            return
+          }
+        }
+        if (formData.afternoonStart && formData.afternoonEnd) {
+          const as = new Date(formData.afternoonStart)
+          const ae = new Date(formData.afternoonEnd)
+          if (isNaN(as.getTime()) || isNaN(ae.getTime()) || as >= ae) {
+            alert('Invalid afternoon time range')
+            setFetchLoading(false)
+            return
+          }
+          if (as < s || ae > eDate) {
+            alert('Afternoon session must be within event start and end')
+            setFetchLoading(false)
+            return
+          }
+        }
+      } else {
+        // clear session times if not using sessions
+        formData.morningStart = ''
+        formData.morningEnd = ''
+        formData.afternoonStart = ''
+        formData.afternoonEnd = ''
+      }
       let res: Response
       if (editingId) {
         res = await fetch(`/api/events?id=${editingId}`, {
@@ -72,7 +128,7 @@ export default function EventsPage() {
         })
       }
       if (res.ok) {
-        setFormData({ title: '', description: '', startDate: '', endDate: '' })
+        resetForm()
         setShowModal(false)
         setEditingId(null)
         fetchEvents()
@@ -89,10 +145,31 @@ export default function EventsPage() {
       title: event.title,
       description: event.description || '',
       startDate: event.startDate.slice(0, 16),
-      endDate: event.endDate.slice(0, 16)
+      endDate: event.endDate.slice(0, 16),
+      morningStart: (event as any).morningStart ? (event as any).morningStart.slice(0,16) : '',
+      morningEnd: (event as any).morningEnd ? (event as any).morningEnd.slice(0,16) : '',
+      afternoonStart: (event as any).afternoonStart ? (event as any).afternoonStart.slice(0,16) : '',
+      afternoonEnd: (event as any).afternoonEnd ? (event as any).afternoonEnd.slice(0,16) : '',
+      useSessions: Boolean((event as any).morningStart || (event as any).afternoonStart)
     })
     setEditingId(event.id)
+    setDurationDays(computeDuration(event.startDate.slice(0,16), event.endDate.slice(0,16)))
     setShowModal(true)
+  }
+
+  const computeDuration = (start?: string, end?: string) => {
+    if (!start || !end) return 0
+    try {
+      const s = new Date(start)
+      const e = new Date(end)
+      const diff = e.getTime() - s.getTime()
+      if (isNaN(diff) || diff < 0) return 0
+      // Count inclusive days (at least 1)
+      const days = Math.max(1, Math.ceil(diff / (24 * 60 * 60 * 1000)))
+      return days
+    } catch (e) {
+      return 0
+    }
   }
 
   const toggleActive = async (id: string, current: boolean | undefined) => {
@@ -136,7 +213,7 @@ export default function EventsPage() {
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-3xl font-bold">Events</h1>
           <button
-            onClick={() => setShowModal(true)}
+            onClick={() => { resetForm(); setEditingId(null); setShowModal(true) }}
             className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
           >
             Add Event
@@ -231,7 +308,12 @@ export default function EventsPage() {
                 <input
                   type="datetime-local"
                   value={formData.startDate}
-                  onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    const updated = { ...formData, startDate: v }
+                    setFormData(updated)
+                    setDurationDays(computeDuration(updated.startDate, updated.endDate))
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md"
                   required
                 />
@@ -241,15 +323,69 @@ export default function EventsPage() {
                 <input
                   type="datetime-local"
                   value={formData.endDate}
-                  onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    const updated = { ...formData, endDate: v }
+                    setFormData(updated)
+                    setDurationDays(computeDuration(updated.startDate, updated.endDate))
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md"
                   required
                 />
               </div>
+              {durationDays > 0 && (
+                <div className="text-sm text-gray-600">Event duration: {durationDays} day{durationDays > 1 ? 's' : ''}</div>
+              )}
+              <div className="mt-2">
+                <label className="inline-flex items-center text-sm">
+                  <input type="checkbox" checked={formData.useSessions} onChange={(e) => setFormData({ ...formData, useSessions: e.target.checked })} className="mr-2" />
+                  Enable morning/afternoon sessions (separate time-in and time-out)
+                </label>
+              </div>
+              {formData.useSessions && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Morning Time In</label>
+                    <input
+                      type="datetime-local"
+                      value={formData.morningStart}
+                      onChange={(e) => setFormData({ ...formData, morningStart: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Morning Time Out</label>
+                    <input
+                      type="datetime-local"
+                      value={formData.morningEnd}
+                      onChange={(e) => setFormData({ ...formData, morningEnd: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Afternoon Time In</label>
+                    <input
+                      type="datetime-local"
+                      value={formData.afternoonStart}
+                      onChange={(e) => setFormData({ ...formData, afternoonStart: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Afternoon Time Out</label>
+                    <input
+                      type="datetime-local"
+                      value={formData.afternoonEnd}
+                      onChange={(e) => setFormData({ ...formData, afternoonEnd: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                </>
+              )}
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowModal(false)}
+                  onClick={() => { setShowModal(false); setEditingId(null); resetForm() }}
                   className="flex-1 bg-gray-300 text-gray-700 px-4 py-2 rounded-md"
                 >
                   Cancel
@@ -259,7 +395,7 @@ export default function EventsPage() {
                   disabled={fetchLoading}
                   className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {fetchLoading ? 'Adding...' : 'Add Event'}
+                  {fetchLoading ? (editingId ? 'Saving...' : 'Adding...') : (editingId ? 'Save Event' : 'Add Event')}
                 </button>
               </div>
             </form>

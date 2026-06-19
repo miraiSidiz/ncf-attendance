@@ -16,6 +16,9 @@ export default function UsersPage() {
   const { data: session, status } = useSession()
   const [users, setUsers] = useState<User[]>([])
   const [showModal, setShowModal] = useState(false)
+  const [showDetailModal, setShowDetailModal] = useState(false)
+  const [selectedUser, setSelectedUser] = useState<User | null>(null)
+  const [editForm, setEditForm] = useState<{ username: string; role: 'ADMIN' | 'SCANNER'; password?: string }>({ username: '', role: 'SCANNER' })
   const [formData, setFormData] = useState<{ username: string; password: string; role: 'ADMIN' | 'SCANNER' }>({ username: '', password: '', role: 'SCANNER' })
   const [fetchLoading, setFetchLoading] = useState(false)
   const router = useRouter()
@@ -63,6 +66,42 @@ export default function UsersPage() {
       }
     } catch (error) {
       console.error(error)
+    } finally {
+      setFetchLoading(false)
+    }
+  }
+
+  const openUserDetail = async (id: string) => {
+    try {
+      const res = await fetch(`/api/users/${id}`)
+      if (!res.ok) return
+      const data = await res.json()
+      setSelectedUser(data)
+      setEditForm({ username: data.username, role: data.role })
+      setShowDetailModal(true)
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedUser) return
+    setFetchLoading(true)
+    try {
+      const body: any = { username: editForm.username, role: editForm.role }
+      if (editForm.password) body.password = editForm.password
+      const res = await fetch(`/api/users/${selectedUser.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      })
+      if (res.ok) {
+        setShowDetailModal(false)
+        setSelectedUser(null)
+        setEditForm({ username: '', role: 'SCANNER' })
+        fetchUsers()
+      }
+    } catch (err) {
+      console.error(err)
     } finally {
       setFetchLoading(false)
     }
@@ -119,7 +158,7 @@ export default function UsersPage() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {users.map((u) => (
-                  <tr key={u.id}>
+                  <tr key={u.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => openUserDetail(u.id)}>
                     <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{u.username}</td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={`px-3 py-1 rounded-full text-xs font-medium ${
@@ -188,6 +227,35 @@ export default function UsersPage() {
                 >
                   {fetchLoading ? 'Adding...' : 'Add User'}
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showDetailModal && selectedUser && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <h2 className="text-xl font-bold mb-4">User Details</h2>
+            <form onSubmit={handleEditSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                <input type="text" value={editForm.username} onChange={(e) => setEditForm({ ...editForm, username: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-md" required />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+                <select value={editForm.role} onChange={(e) => setEditForm({ ...editForm, role: e.target.value as any })} className="w-full px-3 py-2 border border-gray-300 rounded-md">
+                  <option value="SCANNER">Scanner</option>
+                  <option value="ADMIN">Admin</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Password (leave blank to keep)</label>
+                <input type="password" value={editForm.password || ''} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-md" />
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => { setShowDetailModal(false); setSelectedUser(null) }} className="flex-1 bg-gray-300 text-gray-700 px-4 py-2 rounded-md">Close</button>
+                <button type="submit" disabled={fetchLoading} className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-md">{fetchLoading ? 'Saving...' : 'Save'}</button>
               </div>
             </form>
           </div>

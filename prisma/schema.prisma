@@ -79,6 +79,11 @@ model Event {
   description String?
   startDate   DateTime
   endDate     DateTime
+  morningStart DateTime?
+  morningEnd   DateTime?
+  afternoonStart DateTime?
+  afternoonEnd   DateTime?
+  useSessions  Boolean?     @default(false)
   active      Boolean      @default(true)
   createdAt   DateTime     @default(now())
   attendances Attendance[]
@@ -95,6 +100,23 @@ model Attendance {
   scannedAt    DateTime?
   timeOut      DateTime?
   createdAt    DateTime  @default(now())
+  attendanceLogs AttendanceLog[]
 
   @@unique([studentId, eventId, sessionType])
+}
+
+model AttendanceLog {
+  id            String      @id @default(cuid())
+  attendanceId  String?
+  attendance    Attendance? @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  eventId       String
+  studentId     String
+  action        String      // 'in' | 'out' | 'auto-in' | 'auto-out' | 'create'
+  previousTimeOut DateTime?
+  newTimeOut    DateTime?
+  meta          String?
+  createdAt     DateTime    @default(now())
+
+  @@index([eventId])
+  @@index([studentId])
 }

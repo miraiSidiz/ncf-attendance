@@ -55,7 +55,7 @@ providers.push(
   })
 )
 
-const handler = NextAuth({
+export const authOptions = {
   adapter: PrismaAdapter(prisma),
   providers,
   session: { strategy: "jwt" },
@@ -63,14 +63,14 @@ const handler = NextAuth({
     signIn: "/login",
   },
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user }: any) {
       if (user) {
         if ("role" in user) token.role = (user as any).role
         if ("id" in user) token.id = (user as any).id
       }
       return token
     },
-    async session({ session, token }) {
+    async session({ session, token }: any) {
       if (session.user) {
         ;(session.user as any).id = token.id as string
         ;(session.user as any).role = token.role as string
@@ -78,6 +78,8 @@ const handler = NextAuth({
       return session
     },
   },
-})
+}
 
-export { handler as GET, handler as POST }
+const handler = NextAuth(authOptions)
+
+export { handler as GET, handler as POST, authOptions }
