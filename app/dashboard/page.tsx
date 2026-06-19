@@ -89,6 +89,16 @@ export default function DashboardPage() {
     }
   }, [session])
 
+  // Poll summaries and attendances so dashboard updates after scans
+  useEffect(() => {
+    if (!session) return
+    const iv = setInterval(() => {
+      fetchEventSummaries()
+      if (selectedEventId) fetchAttendances(selectedEventId)
+    }, 5000)
+    return () => clearInterval(iv)
+  }, [session, selectedEventId])
+
   const fetchEventSummaries = async () => {
     try {
       const res = await fetch('/api/dashboard')
@@ -216,6 +226,37 @@ export default function DashboardPage() {
         </div>
 
         {selectedEventId && (
+          <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+            {['BSHM','BSTM','BSIT'].map(course => {
+              const summary = eventSummaries.find(s => s.event.id === selectedEventId)
+              const courseStat = summary ? summary.courseStats.find((c: any) => c.course === course) : null
+              const total = courseStat ? courseStat.totalStudents : 0
+              const morningLate = courseStat ? courseStat.morningLate : 0
+              const morningAbsent = courseStat ? courseStat.morningAbsent : 0
+              const afternoonLate = courseStat ? courseStat.afternoonLate : 0
+              const afternoonAbsent = courseStat ? courseStat.afternoonAbsent : 0
+              const present = total - Math.max(0, (morningAbsent + afternoonAbsent) / 2) // rough present estimate
+              return (
+                <div key={course} className="bg-white rounded-lg shadow-md p-4">
+                  <h4 className="text-lg font-semibold mb-2">{course}</h4>
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-green-50 rounded flex-1">
+                      <div className="text-sm text-gray-500">Present</div>
+                      <div className="text-2xl font-bold text-green-700">{Math.max(0, total - morningAbsent)}</div>
+                    </div>
+                    <div className="p-3 bg-yellow-50 rounded flex-1">
+                      <div className="text-sm text-gray-500">Late (M/A)</div>
+                      <div className="text-2xl font-bold text-yellow-700">{(morningLate || 0) + (afternoonLate || 0)}</div>
+                    </div>
+                    <div className="p-3 bg-red-50 rounded flex-1">
+                      <div className="text-sm text-gray-500">Absent (M/A)</div>
+                      <div className="text-2xl font-bold text-red-700">{(morningAbsent || 0) + (afternoonAbsent || 0)}</div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Late Students */}
             <div className="bg-white rounded-lg shadow-md p-6">
