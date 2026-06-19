@@ -30,7 +30,7 @@ export async function POST(request: Request) {
         data: {
           username,
           password: hashedPassword,
-          role: 'ADMIN'
+          role: 'SCANNER'
         }
       })
 
