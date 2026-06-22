@@ -18,10 +18,13 @@
     const eventsRes = await fetch(base + '/api/events?scope=scan')
     const events = await eventsRes.json()
     if (!events || events.length === 0) return console.error('No scan-eligible events found')
-    const event = events[0]
+    const now = new Date()
+    // pick an event that's currently active if possible
+    let event = events.find(e => new Date(e.startDate) <= now && new Date(e.endDate) >= now)
+    if (!event) event = events[0]
 
     console.log('Fetching students...')
-    const studentsRes = await fetch('http://localhost:3000/api/students')
+    const studentsRes = await fetch(base + '/api/students')
     const students = await studentsRes.json()
     if (!students || students.length === 0) return console.error('No students found')
     const student = students[0]

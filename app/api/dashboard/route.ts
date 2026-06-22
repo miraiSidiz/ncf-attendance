@@ -24,7 +24,7 @@ export async function GET() {
       const attMap: Record<string, { morning?: string | null; afternoon?: string | null }> = {}
       atts.forEach(a => {
         if (!attMap[a.studentId]) attMap[a.studentId] = {}
-        attMap[a.studentId][a.sessionType || 'morning'] = a.status
+        ;(attMap[a.studentId] as any)[a.sessionType || 'morning'] = a.status
       })
 
       const courseStats: any[] = []

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getToken } from 'next-auth/jwt'
+import { publishAttendance } from '@/lib/sse'
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
@@ -24,6 +25,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const { qrCode, eventId, action, sessionType: requestedSessionType } = await request.json()
+    console.log('POST /api/attendance received:', { qrCode, eventId, action, requestedSessionType, at: new Date().toISOString() })
     
     const student = await prisma.student.findFirst({
       where: { qrCode }
@@ -72,11 +74,27 @@ export async function POST(request: Request) {
 
     // Explicit time-in requested
     if (action === 'in') {
-      if (now < startDate) {
-        return NextResponse.json({ error: 'Too early to time in' }, { status: 400 })
-      }
-      if (existing && existing.scannedAt) {
+      console.log('Handling explicit time-in', { student: student.id, eventId, requestedSessionType, sessionType })
+
+      // Ensure we only check/create the attendance for the resolved sessionType (no cross-session creates)
+      const existingForSession = await prisma.attendance.findUnique({
+        where: {
+          studentId_eventId_sessionType: {
+            studentId: student.id,
+            eventId: eventId,
+            sessionType: sessionType
+          }
+        }
+      })
+
+      if (existingForSession && existingForSession.scannedAt) {
         return NextResponse.json({ error: `Student already timed in for ${sessionType} session` }, { status: 400 })
+      }
+
+      // Defensive: if there is an open attendance in a different session (no timeOut), do not create another session record.
+      const openOther = await prisma.attendance.findFirst({ where: { studentId: student.id, eventId, timeOut: null } })
+      if (openOther && openOther.sessionType !== sessionType) {
+        return NextResponse.json({ error: `Existing open attendance found for ${openOther.sessionType} session; close it before creating ${sessionType} in.` }, { status: 400 })
       }
 
       // Auto-set time-out based on session (prefer event-specific end times)
@@ -87,16 +105,25 @@ export async function POST(request: Request) {
         autoTimeOut = event.afternoonEnd ? new Date(event.afternoonEnd) : afternoonEnd
       }
 
-      const attendance = await prisma.attendance.create({
-        data: {
-          studentId: student.id,
-          eventId: eventId,
-          sessionType,
-          status,
-          scannedAt: now
-        },
-        include: { student: true, event: true }
-      })
+      let attendance: any = null
+      try {
+        attendance = await prisma.attendance.create({
+          data: {
+            studentId: student.id,
+            eventId: eventId,
+            sessionType,
+            status,
+            scannedAt: now
+          },
+          include: { student: true, event: true }
+        })
+      } catch (e: any) {
+        // Handle unique constraint race: if another request created it concurrently, return friendly error
+        if (e && e.code === 'P2002') {
+          return NextResponse.json({ error: `Student already timed in for ${sessionType} session` }, { status: 400 })
+        }
+        throw e
+      }
 
       // create audit log for time-in
       try {
@@ -111,54 +138,88 @@ export async function POST(request: Request) {
         })
       } catch (e) { console.error('attendanceLog create failed (in):', e) }
 
+      // publish realtime event
+      try {
+        publishAttendance('in', { attendance: attendance, student, event, sessionType, status })
+      } catch (e) { }
+
       return NextResponse.json({ attendance, student, event })
     }
 
     // Explicit time-out requested
     if (action === 'out') {
-      if (!existing) {
-        return NextResponse.json({ error: `No existing time-in for ${sessionType} session` }, { status: 400 })
+      // If there is no existing attendance for the computed sessionType,
+      // attempt a safe fallback: find any existing attendance for the student
+      // in this event that has no timeOut (likely the one we should time-out).
+      // This makes the system more tolerant of session detection edge-cases
+      // (timezones, misconfigured session windows, or client/session mismatches).
+      let target = existing
+      if (!target) {
+        if (requestedSessionType) {
+          // For explicit outs, look up attendance for the requested sessionType
+          // with no timeOut and allow timing out regardless of session window.
+          const explicitTarget = await prisma.attendance.findFirst({
+            where: { studentId: student.id, eventId, sessionType: requestedSessionType, timeOut: null },
+            orderBy: { createdAt: 'desc' }
+          })
+
+          if (!explicitTarget) {
+            return NextResponse.json({ error: `No existing time-in for ${requestedSessionType} session` }, { status: 400 })
+          }
+
+          target = explicitTarget
+          sessionType = requestedSessionType
+        } else {
+          // Auto-detection/fallback: find the most recent attendance for this student & event without timeOut
+          // and validate it's eligible for time-out given session windows.
+          const fallback = await prisma.attendance.findFirst({
+            where: { studentId: student.id, eventId, timeOut: null },
+            orderBy: { createdAt: 'desc' }
+          })
+
+          if (!fallback) {
+            return NextResponse.json({ error: `No existing time-in for ${sessionType} session` }, { status: 400 })
+          }
+
+          const fallbackSession = fallback.sessionType || 'morning'
+
+          target = fallback
+          sessionType = fallbackSession
+        }
       }
-      if (existing.timeOut) {
+      if (target.timeOut) {
         return NextResponse.json({ error: `Student already timed out for ${sessionType} session` }, { status: 400 })
       }
 
-      // Check session-specific time-out windows (use event windows if present)
-      if (sessionType === 'morning' && now < morningEnd) {
-        return NextResponse.json({ error: 'Morning time-out not available until configured morning end time' }, { status: 400 })
-      }
-      if (sessionType === 'afternoon' && now < afternoonStart) {
-        return NextResponse.json({ error: 'Afternoon time-out not available until configured afternoon start time' }, { status: 400 })
-      }
-
       const updated = await prisma.attendance.update({
-        where: { id: existing.id },
+        where: { id: target.id },
         data: { timeOut: now }
       })
-      console.log(`Attendance ${existing.id} timed out at ${now.toISOString()} by scan out`)
+      console.log(`Attendance ${target.id} timed out at ${now.toISOString()} by scan out (resolved session: ${sessionType})`)
 
       try {
         await prisma.attendanceLog.create({
           data: {
-            attendanceId: existing.id,
+            attendanceId: updated.id,
             eventId: eventId,
             studentId: student.id,
             action: 'out',
-            previousTimeOut: existing.timeOut || null,
+            previousTimeOut: target.timeOut || null,
             newTimeOut: now
           }
         })
       } catch (e) { console.error('attendanceLog create failed (out):', e) }
+
+      // publish realtime event
+      try {
+        publishAttendance('out', { attendance: updated, student, event, sessionType })
+      } catch (e) { }
 
       return NextResponse.json({ attendance: updated, student, event })
     }
 
     // Auto behaviour
     if (!existing) {
-      if (now < startDate) {
-        return NextResponse.json({ error: 'Too early to time in' }, { status: 400 })
-      }
-
       // Auto time-out based on session (prefer event-provided end times)
       let autoTimeOut = null
       if (sessionType === 'morning') {
@@ -191,17 +252,14 @@ export async function POST(request: Request) {
         })
       } catch (e) { console.error('attendanceLog create failed (auto-in):', e) }
 
+      // publish realtime event for auto-in
+      try { publishAttendance('auto-in', { attendance, student, event, sessionType, status }) } catch (e) {}
+
       return NextResponse.json({ attendance, student, event })
     }
 
     // Existing time-in: auto time-out if at or past session end time
     if (!existing.timeOut) {
-      const canTimeOut = (sessionType === 'morning' && now >= morningEnd) || (sessionType === 'afternoon' && now >= afternoonStart)
-
-      if (!canTimeOut) {
-        return NextResponse.json({ error: `Time-out not yet available for ${sessionType} session` }, { status: 400 })
-      }
-
       const updated = await prisma.attendance.update({
         where: { id: existing.id },
         data: { timeOut: now }
@@ -220,6 +278,9 @@ export async function POST(request: Request) {
           }
         })
       } catch (e) { console.error('attendanceLog create failed (auto-out):', e) }
+
+      // publish realtime event for auto-out
+      try { publishAttendance('auto-out', { attendance: updated, student, event, sessionType }) } catch (e) {}
 
       return NextResponse.json({ attendance: updated, student, event })
     }
@@ -240,19 +301,25 @@ export async function DELETE(request: Request) {
     // allow JSON body fallback for clients that send JSON
     let bodyId = null
     let bodyReason = null
+    let body: any = null
     try {
-      const body = await request.json().catch(() => null)
+      body = await request.json().catch(() => null)
       if (body && body.id) bodyId = body.id
       if (body && body.reason) bodyReason = String(body.reason)
     } catch (e) {}
 
     const attendanceId = id || bodyId
     const reason = bodyReason || reasonQuery
-    if (!attendanceId) return NextResponse.json({ error: 'Missing attendance id' }, { status: 400 })
+
+    const eventIdParam = url.searchParams.get('eventId') || null
+    const eventIdBody = body && body.eventId ? body.eventId : null
+    const eventIdToDelete = eventIdParam || eventIdBody
+
+    if (!attendanceId && !eventIdToDelete) return NextResponse.json({ error: 'Missing attendance id or eventId' }, { status: 400 })
     if (!reason || String(reason).trim().length === 0) return NextResponse.json({ error: 'Missing deletion reason' }, { status: 400 })
 
     // validate admin session/token
-    const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET })
+    const token = await getToken({ req: request as any, secret: process.env.NEXTAUTH_SECRET })
     if (!token || (token.role !== 'ADMIN' && token.role !== 'admin')) {
       return NextResponse.json({ error: 'Unauthorized - admin required' }, { status: 403 })
     }
@@ -262,13 +329,6 @@ export async function DELETE(request: Request) {
       // defensive: should not reach here because attendanceId check above, but keep for clarity
     }
 
-    const eventIdParam = url.searchParams.get('eventId') || (bodyId ? null : null)
-    let eventIdBody = null
-    try {
-      const body = await request.json().catch(() => null)
-      if (body && body.eventId) eventIdBody = body.eventId
-    } catch (e) {}
-    const eventIdToDelete = eventIdParam || eventIdBody
     if (eventIdToDelete) {
       // bulk-delete attendances for the event: create logs first then delete
       const eventAttendances = await prisma.attendance.findMany({ where: { eventId: eventIdToDelete } })
@@ -297,6 +357,11 @@ export async function DELETE(request: Request) {
         return NextResponse.json({ error: 'Failed to delete attendances' }, { status: 500 })
       }
 
+      // publish bulk delete event
+      try {
+        publishAttendance('delete_bulk', { eventId: eventIdToDelete, deleted: eventAttendances.length, attendanceIds: eventAttendances.map(a => a.id), meta: metaObj })
+      } catch (e) {}
+
       return NextResponse.json({ success: true, deleted: eventAttendances.length })
     }
 
@@ -322,6 +387,13 @@ export async function DELETE(request: Request) {
     } catch (e) { console.error('attendanceLog create failed (delete):', e) }
 
     await prisma.attendance.delete({ where: { id: attendanceId } })
+    // publish single delete event
+    try {
+      const metaObj: any = { reason: String(reason) }
+      if (token && token.id) metaObj.deletedBy = token.id
+      publishAttendance('delete', { attendanceId, eventId: existing.eventId, studentId: existing.studentId, meta: metaObj })
+    } catch (e) {}
+
     return NextResponse.json({ success: true })
   } catch (error) {
     console.error(error)

@@ -57,6 +57,14 @@ export default function ScanPage() {
   const [notFoundCount, setNotFoundCount] = useState(0)
   const [toast, setToast] = useState<{ text: string; actionLabel?: string; action?: () => void } | null>(null)
 
+  const scanModeRef = useRef(scanMode)
+  const sessionTypeRef = useRef(sessionType)
+  const selectedEventRef = useRef(selectedEvent)
+
+  useEffect(() => { scanModeRef.current = scanMode }, [scanMode])
+  useEffect(() => { sessionTypeRef.current = sessionType }, [sessionType])
+  useEffect(() => { selectedEventRef.current = selectedEvent }, [selectedEvent])
+
   // Auto-detect session based on time of day
   useEffect(() => {
     const now = new Date()
@@ -93,7 +101,10 @@ export default function ScanPage() {
       return
     }
 
-    if (!pendingQr || !selectedEvent || !confirmAction) {
+    const currentSelectedEvent = selectedEventRef.current
+    const currentSessionType = sessionTypeRef.current
+
+    if (!pendingQr || !currentSelectedEvent || !confirmAction) {
       setMessage({ text: 'Missing data for confirmation', type: 'error' })
       setConfirming(false)
       return
@@ -103,7 +114,7 @@ export default function ScanPage() {
       const res = await fetch('/api/attendance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ qrCode: pendingQr, eventId: selectedEvent, action: confirmAction, sessionType })
+        body: JSON.stringify({ qrCode: pendingQr, eventId: currentSelectedEvent, action: confirmAction, sessionType: currentSessionType })
       })
       if (res.ok) {
         const data = await res.json()
@@ -448,10 +459,14 @@ export default function ScanPage() {
   }
 
   const handleScan = async (qrCode: string) => {
+    const currentScanMode = scanModeRef.current
+    const currentSessionType = sessionTypeRef.current
+    const currentSelectedEvent = selectedEventRef.current
+
     try {
       stopScanning()
       // If forcing Time In/Out, fetch student info and show confirmation before sending
-      if (scanMode === 'out' || scanMode === 'in') {
+      if (currentScanMode === 'out' || currentScanMode === 'in') {
         try {
           const studentsRes = await fetch('/api/students')
           const students = await studentsRes.json()
@@ -462,7 +477,7 @@ export default function ScanPage() {
           }
           setConfirmStudent(student)
           setPendingQr(qrCode)
-          setConfirmAction(scanMode)
+          setConfirmAction(currentScanMode)
           setConfirming(true)
           return
         } catch (err) {
@@ -475,7 +490,7 @@ export default function ScanPage() {
       const res = await fetch('/api/attendance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ qrCode, eventId: selectedEvent, action: scanMode !== 'auto' ? scanMode : undefined, sessionType })
+        body: JSON.stringify({ qrCode, eventId: currentSelectedEvent, action: currentScanMode !== 'auto' ? currentScanMode : undefined, sessionType: currentSessionType })
       })
 
       if (res.ok) {
@@ -596,37 +611,7 @@ export default function ScanPage() {
             <h4 className="text-sm font-medium mb-2">Diagnostics</h4>
             <div className="text-xs text-gray-600">
 
-          <div className="mb-6 flex items-center gap-2">
-            <label className="block text-sm font-medium text-gray-700">Scan Mode</label>
-            <div className="flex gap-2">
-              <button onClick={() => setScanMode('auto')} className={`px-3 py-1 rounded ${scanMode === 'auto' ? 'bg-blue-600 text-white' : 'bg-gray-100'}`}>Auto</button>
-              <button onClick={() => setScanMode('in')} className={`px-3 py-1 rounded ${scanMode === 'in' ? 'bg-green-600 text-white' : 'bg-gray-100'}`}>Time In</button>
-              {(() => {
-                const sel = events.find(e => e.id === selectedEvent)
-                const available = sel && sel.endDate ? new Date() >= new Date(sel.endDate) : false
-                return (
-                  <button
-                    onClick={() => available && setScanMode('out')}
-                    disabled={!available}
-                    className={`px-3 py-1 rounded ${scanMode === 'out' ? 'bg-red-600 text-white' : (available ? 'bg-gray-100' : 'bg-gray-200 text-gray-400 cursor-not-allowed')}`}
-                  >
-                    Time Out
-                  </button>
-                )
-              })()}
-            </div>
-            <div className="text-xs text-gray-500 ml-4">
-              Mode: {scanMode === 'auto' ? 'Auto (in/out)' : scanMode === 'in' ? 'Force Time In' : 'Force Time Out'}
-              {selectedEvent ? (
-                (() => {
-                  const sel = events.find(e => e.id === selectedEvent)
-                  if (!sel || !sel.endDate) return null
-                  const available = new Date() >= new Date(sel.endDate)
-                  return <span className="block">{available ? 'Time Out available' : `Time Out available at ${new Date(sel.endDate).toLocaleString()}`}</span>
-                })()
-              ) : null}
-            </div>
-          </div>
+          {/* Scan Mode control removed — replaced by explicit session buttons below to avoid conflicting state */}
               <p>Detected cameras: {devices.length}</p>
               <ul className="list-disc ml-6">
                 {devices.map(d => (
@@ -821,20 +806,61 @@ export default function ScanPage() {
           </div>
 
           {/* Session selector */}
-          <div className="mt-4 flex gap-2 justify-center">
-            <label className="text-sm font-medium text-gray-700">Session:</label>
-            <button
-              onClick={() => setSessionType('morning')}
-              className={`px-4 py-2 rounded ${sessionType === 'morning' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-            >
-              Morning (Before 12 PM)
-            </button>
-            <button
-              onClick={() => setSessionType('afternoon')}
-              className={`px-4 py-2 rounded ${sessionType === 'afternoon' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-            >
-              Afternoon (1 PM+)
-            </button>
+          <div className="mt-4 flex flex-col items-center gap-2">
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-700">Session:</label>
+              <button
+                onClick={() => setScanMode('auto')}
+                className={`px-3 py-1 rounded ${scanMode === 'auto' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+              >
+                Auto
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={async () => {
+                  setSessionType('morning')
+                  setScanMode('in')
+                  try { if (!scanning) await startScanning() } catch (e) { console.warn('startScanning failed', e) }
+                }}
+                className={`px-4 py-2 rounded ${sessionType === 'morning' && scanMode === 'in' ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+              >
+                Morning Time In
+              </button>
+
+              <button
+                onClick={async () => {
+                  setSessionType('morning')
+                  setScanMode('out')
+                  try { if (!scanning) await startScanning() } catch (e) { console.warn('startScanning failed', e) }
+                }}
+                className={`px-4 py-2 rounded ${sessionType === 'morning' && scanMode === 'out' ? 'bg-red-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+              >
+                Morning Time Out
+              </button>
+
+              <button
+                onClick={async () => {
+                  setSessionType('afternoon')
+                  setScanMode('in')
+                  try { if (!scanning) await startScanning() } catch (e) { console.warn('startScanning failed', e) }
+                }}
+                className={`px-4 py-2 rounded ${sessionType === 'afternoon' && scanMode === 'in' ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+              >
+                Afternoon Time In
+              </button>
+
+              <button
+                onClick={async () => {
+                  setSessionType('afternoon')
+                  setScanMode('out')
+                  try { if (!scanning) await startScanning() } catch (e) { console.warn('startScanning failed', e) }
+                }}
+                className={`px-4 py-2 rounded ${sessionType === 'afternoon' && scanMode === 'out' ? 'bg-red-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+              >
+                Afternoon Time Out
+              </button>
+            </div>
           </div>
 
           {message && (

@@ -32,6 +32,8 @@ export default function StudentsPage() {
   const [bulkPreview, setBulkPreview] = useState<any[]>([])
   const [fetchLoading, setFetchLoading] = useState(false)
   const [bulkLoading, setBulkLoading] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [courseFilter, setCourseFilter] = useState('')
   const router = useRouter()
 
   useEffect(() => {
@@ -60,6 +62,15 @@ export default function StudentsPage() {
       fetchStudents()
     }
   }, [session])
+
+  const uniqueCourses = Array.from(new Set(students.map(s => s.course).filter(Boolean))) as string[]
+
+  const filteredStudents = students.filter(s => {
+    const matchesSearch = s.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          s.studentId.toLowerCase().includes(searchQuery.toLowerCase())
+    const matchesCourse = courseFilter === '' || s.course === courseFilter
+    return matchesSearch && matchesCourse
+  })
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -115,12 +126,16 @@ export default function StudentsPage() {
     return name.replace(/[^a-z0-9-_\. ]/gi, '_')
   }
   const exportQRCodesZip = async () => {
-    if (!students.length) {
+    if (!filteredStudents.length) {
       alert('No students to export')
       return
     }
     try {
-      const res = await fetch('/api/students/zip')
+      const params = new URLSearchParams()
+      if (courseFilter) params.append('course', courseFilter)
+      if (searchQuery) params.append('search', searchQuery)
+      const apiUrl = `/api/students/zip${params.toString() ? `?${params.toString()}` : ''}`
+      const res = await fetch(apiUrl)
       if (!res.ok) throw new Error('Failed to generate ZIP')
       const blob = await res.blob()
       const url = window.URL.createObjectURL(blob)
@@ -149,12 +164,12 @@ export default function StudentsPage() {
   }
 
   const exportStudentData = () => {
-    if (!students.length) {
+    if (!filteredStudents.length) {
       alert('No students to export')
       return
     }
     const header = 'Name,Student ID,Email,Gender,Course,Year Level,Section\n'
-    const rows = students.map(s => 
+    const rows = filteredStudents.map(s => 
       `"${s.name}","${s.studentId}","${s.email || ''}","${s.gender || ''}","${s.course || ''}","${s.yearLevel || ''}","${s.section || ''}"`
     ).join('\n')
     const csv = header + rows
@@ -168,12 +183,12 @@ export default function StudentsPage() {
   }
 
   const exportQRCodes = () => {
-    if (!students.length) {
+    if (!filteredStudents.length) {
       alert('No students to export')
       return
     }
     const header = 'Student Name,Student ID,QR Code\n'
-    const rows = students.map(s => 
+    const rows = filteredStudents.map(s => 
       `"${s.name}","${s.studentId}","${s.qrCode}"`
     ).join('\n')
     const csv = header + rows
@@ -327,6 +342,25 @@ export default function StudentsPage() {
             </button>
           </div>
         </div>
+
+        <div className="flex flex-col md:flex-row gap-4 mb-6">
+          <input 
+            type="text" 
+            placeholder="Search by Name or ID..." 
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="border border-gray-300 p-2 rounded-lg w-full md:w-1/3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <select
+            value={courseFilter}
+            onChange={e => setCourseFilter(e.target.value)}
+            className="border border-gray-300 p-2 rounded-lg w-full md:w-1/4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">All Courses</option>
+            {uniqueCourses.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+
         {fetchLoading && !students.length ? (
           <div className="flex justify-center items-center py-12">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
@@ -367,7 +401,7 @@ export default function StudentsPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {students.map((student, idx) => (
+                {filteredStudents.map((student, idx) => (
                   <tr key={student.id}>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{idx + 1}</td>
                     <td className="px-6 py-4 whitespace-nowrap">

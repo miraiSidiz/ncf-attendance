@@ -21,7 +21,7 @@ export default function EventsPage() {
   const [showModal, setShowModal] = useState(false)
   const [deleteCandidate, setDeleteCandidate] = useState<Event | null>(null)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
-  const [formData, setFormData] = useState({ title: '', description: '', startDate: '', endDate: '', morningStart: '', morningEnd: '', afternoonStart: '', afternoonEnd: '', useSessions: false })
+  const [formData, setFormData] = useState({ title: '', description: '', startDate: '', endDate: '', morningStart: '', morningEnd: '', afternoonStart: '', afternoonEnd: '', useMorning: false, useAfternoon: false })
   const [durationDays, setDurationDays] = useState<number>(0)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [fetchLoading, setFetchLoading] = useState(false)
@@ -55,7 +55,7 @@ export default function EventsPage() {
   }, [session])
 
   const resetForm = () => {
-    setFormData({ title: '', description: '', startDate: '', endDate: '', morningStart: '', morningEnd: '', afternoonStart: '', afternoonEnd: '', useSessions: false })
+    setFormData({ title: '', description: '', startDate: '', endDate: '', morningStart: '', morningEnd: '', afternoonStart: '', afternoonEnd: '', useMorning: false, useAfternoon: false })
     setDurationDays(0)
   }
 
@@ -76,55 +76,68 @@ export default function EventsPage() {
         setFetchLoading(false)
         return
       }
-      if (formData.useSessions) {
-        // if sessions enabled, validate morning and afternoon ranges if provided
-        if (formData.morningStart && formData.morningEnd) {
-          const ms = new Date(formData.morningStart)
-          const me = new Date(formData.morningEnd)
-          if (isNaN(ms.getTime()) || isNaN(me.getTime()) || ms >= me) {
-            alert('Invalid morning time range')
-            setFetchLoading(false)
-            return
-          }
-          if (ms < s || me > eDate) {
-            alert('Morning session must be within event start and end')
-            setFetchLoading(false)
-            return
-          }
+      // validate morning/afternoon selections and ranges
+      if (formData.useMorning) {
+        if (!formData.morningStart || !formData.morningEnd) {
+          alert('Please provide morning start and end times')
+          setFetchLoading(false)
+          return
         }
-        if (formData.afternoonStart && formData.afternoonEnd) {
-          const as = new Date(formData.afternoonStart)
-          const ae = new Date(formData.afternoonEnd)
-          if (isNaN(as.getTime()) || isNaN(ae.getTime()) || as >= ae) {
-            alert('Invalid afternoon time range')
-            setFetchLoading(false)
-            return
-          }
-          if (as < s || ae > eDate) {
-            alert('Afternoon session must be within event start and end')
-            setFetchLoading(false)
-            return
-          }
+        const ms = new Date(formData.morningStart)
+        const me = new Date(formData.morningEnd)
+        if (isNaN(ms.getTime()) || isNaN(me.getTime()) || ms >= me) {
+          alert('Invalid morning time range')
+          setFetchLoading(false)
+          return
+        }
+        if (ms < s || me > eDate) {
+          alert('Morning session must be within event start and end')
+          setFetchLoading(false)
+          return
         }
       } else {
-        // clear session times if not using sessions
+        // clear morning times when not used
         formData.morningStart = ''
         formData.morningEnd = ''
+      }
+
+      if (formData.useAfternoon) {
+        if (!formData.afternoonStart || !formData.afternoonEnd) {
+          alert('Please provide afternoon start and end times')
+          setFetchLoading(false)
+          return
+        }
+        const as = new Date(formData.afternoonStart)
+        const ae = new Date(formData.afternoonEnd)
+        if (isNaN(as.getTime()) || isNaN(ae.getTime()) || as >= ae) {
+          alert('Invalid afternoon time range')
+          setFetchLoading(false)
+          return
+        }
+        if (as < s || ae > eDate) {
+          alert('Afternoon session must be within event start and end')
+          setFetchLoading(false)
+          return
+        }
+      } else {
+        // clear afternoon times when not used
         formData.afternoonStart = ''
         formData.afternoonEnd = ''
       }
       let res: Response
+      // propagate a useSessions boolean for backend compatibility
+      const payload = { ...formData, useSessions: Boolean(formData.useMorning || formData.useAfternoon) }
       if (editingId) {
         res = await fetch(`/api/events?id=${editingId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
+          body: JSON.stringify(payload)
         })
       } else {
         res = await fetch('/api/events', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
+          body: JSON.stringify(payload)
         })
       }
       if (res.ok) {
@@ -150,7 +163,8 @@ export default function EventsPage() {
       morningEnd: (event as any).morningEnd ? (event as any).morningEnd.slice(0,16) : '',
       afternoonStart: (event as any).afternoonStart ? (event as any).afternoonStart.slice(0,16) : '',
       afternoonEnd: (event as any).afternoonEnd ? (event as any).afternoonEnd.slice(0,16) : '',
-      useSessions: Boolean((event as any).morningStart || (event as any).afternoonStart)
+      useMorning: Boolean((event as any).morningStart),
+      useAfternoon: Boolean((event as any).afternoonStart)
     })
     setEditingId(event.id)
     setDurationDays(computeDuration(event.startDate.slice(0,16), event.endDate.slice(0,16)))
@@ -336,13 +350,18 @@ export default function EventsPage() {
               {durationDays > 0 && (
                 <div className="text-sm text-gray-600">Event duration: {durationDays} day{durationDays > 1 ? 's' : ''}</div>
               )}
-              <div className="mt-2">
+              <div className="mt-2 grid grid-cols-2 gap-4">
                 <label className="inline-flex items-center text-sm">
-                  <input type="checkbox" checked={formData.useSessions} onChange={(e) => setFormData({ ...formData, useSessions: e.target.checked })} className="mr-2" />
-                  Enable morning/afternoon sessions (separate time-in and time-out)
+                  <input type="checkbox" checked={formData.useMorning} onChange={(e) => setFormData({ ...formData, useMorning: e.target.checked, morningStart: e.target.checked ? formData.morningStart : '', morningEnd: e.target.checked ? formData.morningEnd : '' })} className="mr-2" />
+                  Enable Morning Session
+                </label>
+                <label className="inline-flex items-center text-sm">
+                  <input type="checkbox" checked={formData.useAfternoon} onChange={(e) => setFormData({ ...formData, useAfternoon: e.target.checked, afternoonStart: e.target.checked ? formData.afternoonStart : '', afternoonEnd: e.target.checked ? formData.afternoonEnd : '' })} className="mr-2" />
+                  Enable Afternoon Session
                 </label>
               </div>
-              {formData.useSessions && (
+
+              {formData.useMorning && (
                 <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Morning Time In</label>
@@ -362,6 +381,11 @@ export default function EventsPage() {
                       className="w-full px-3 py-2 border border-gray-300 rounded-md"
                     />
                   </div>
+                </>
+              )}
+
+              {formData.useAfternoon && (
+                <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Afternoon Time In</label>
                     <input

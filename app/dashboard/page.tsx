@@ -15,7 +15,7 @@ interface Student {
   section?: string
 }
 
-interface Event {
+interface AppEvent {
   id: string
   title: string
   description?: string
@@ -33,7 +33,7 @@ interface Attendance {
 
 export default function DashboardPage() {
   const { data: session, status } = useSession()
-  const [events, setEvents] = useState<Event[]>([])
+  const [events, setEvents] = useState<AppEvent[]>([])
   const [eventSummaries, setEventSummaries] = useState<any[]>([])
   const [selectedEventId, setSelectedEventId] = useState<string>('')
   const [attendances, setAttendances] = useState<Attendance[]>([])
@@ -99,6 +99,42 @@ export default function DashboardPage() {
     return () => clearInterval(iv)
   }, [session, selectedEventId])
 
+  // Real-time updates via Server-Sent Events (SSE)
+  useEffect(() => {
+    if (!session) return
+    let es: EventSource | null = null
+    try {
+      es = new EventSource('/api/attendance/stream')
+      es.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data)
+          const evt = data.event
+          const payload = data.payload
+          // refresh summaries
+          fetchEventSummaries()
+          // if the event relates to the currently selected event, refresh attendances
+          const eventIdFromPayload = payload?.attendance?.eventId || payload?.event?.id || payload?.eventId
+          if (selectedEventId && eventIdFromPayload === selectedEventId) {
+            fetchAttendances(selectedEventId)
+          }
+        } catch (err) {
+          console.error('Failed to handle SSE message', err)
+        }
+      }
+      es.onerror = (err) => {
+        console.error('SSE connection error', err)
+        // close and allow polling to continue; will reconnect on next render
+        try { es?.close() } catch (e) {}
+      }
+    } catch (e) {
+      console.error('Failed to open SSE', e)
+    }
+
+    return () => {
+      try { es?.close() } catch (e) {}
+    }
+  }, [session, selectedEventId])
+
   const fetchEventSummaries = async () => {
     try {
       const res = await fetch('/api/dashboard')
@@ -151,6 +187,7 @@ export default function DashboardPage() {
 
   const { late, absent } = getAbsentAndLateStudents()
   const activeEvent = getActiveEvent()
+  const selectedSummary = selectedEventId ? eventSummaries.find(s => s.event.id === selectedEventId) : null
 
   if (status === 'loading' || loading) {
     return (
@@ -185,7 +222,7 @@ export default function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {eventSummaries.map(s => (
+                {eventSummaries.map((s: any) => (
                   <tr key={s.event.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => { setSelectedEventId(s.event.id); fetchAttendances(s.event.id) }}>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">{s.event.title}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">{new Date(s.event.startDate).toLocaleDateString()}</td>
@@ -228,7 +265,7 @@ export default function DashboardPage() {
         {selectedEventId && (
           <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
             {['BSHM','BSTM','BSIT'].map(course => {
-              const summary = eventSummaries.find(s => s.event.id === selectedEventId)
+              const summary = eventSummaries.find((s: any) => s.event.id === selectedEventId)
               const courseStat = summary ? summary.courseStats.find((c: any) => c.course === course) : null
               const total = courseStat ? courseStat.totalStudents : 0
               const morningLate = courseStat ? courseStat.morningLate : 0
@@ -257,119 +294,114 @@ export default function DashboardPage() {
               )
             })}
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Late Students */}
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h3 className="text-xl font-bold text-orange-600 mb-4 flex items-center gap-2">
-                <span className="w-3 h-3 bg-orange-500 rounded-full"></span>
-                Late Students ({late.length})
-              </h3>
-              {late.length === 0 ? (
-                <p className="text-gray-500 text-center py-4">No late students</p>
-              ) : (
-                <div className="space-y-3 max-h-96 overflow-y-auto">
-                  {late.map(student => (
-                    <div key={student.id} className="flex items-center gap-4 p-3 bg-orange-50 rounded-lg">
-                      {student.photo ? (
-                        <img src={student.photo} alt={student.name} className="w-12 h-12 rounded-full object-cover" />
-                      ) : (
-                        <div className="w-12 h-12 rounded-full bg-orange-200 flex items-center justify-center text-orange-700 font-bold">
-                          {student.name.charAt(0)}
-                        </div>
-                      )}
-                      <div className="flex-1">
-                        <p className="font-semibold text-gray-800">{student.name}</p>
-                        <p className="text-sm text-gray-600">ID: {student.studentId}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Absent Students grouped by Course / Year / Section */}
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h3 className="text-xl font-bold text-red-600 mb-4 flex items-center gap-2">
-                <span className="w-3 h-3 bg-red-500 rounded-full"></span>
-                Absent Students ({absent.reduce((sum, g) => sum + g.students.length, 0)})
-              </h3>
-              {absent.length === 0 ? (
-                <p className="text-gray-500 text-center py-4">No absent students</p>
-              ) : (
-                <div className="space-y-4 max-h-96 overflow-y-auto">
-                  {absent.map((group, idx) => (
-                    <div key={idx} className="border border-red-100 rounded-md p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <div>
-                          <p className="font-semibold text-gray-800">{group.course} • {group.yearLevel} • {group.section}</p>
-                          <p className="text-sm text-gray-600">Absent: {group.students.length}</p>
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        {group.students.slice(0, 20).map(student => (
-                          <div key={student.id} className="flex items-center gap-3 p-2 bg-red-50 rounded">
-                            {student.photo ? (
-                              <img src={student.photo} alt={student.name} className="w-8 h-8 rounded-full object-cover" />
-                            ) : (
-                              <div className="w-8 h-8 rounded-full bg-red-200 flex items-center justify-center text-red-700 font-bold">
-                                {student.name.charAt(0)}
-                              </div>
-                            )}
-                            <div>
-                              <p className="text-sm font-medium text-gray-800">{student.name}</p>
-                              <p className="text-xs text-gray-600">{student.studentId}</p>
-                            </div>
-                          </div>
-                        ))}
-                        {group.students.length > 20 && (
-                          <p className="text-xs text-gray-500">And {group.students.length - 20} more...</p>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
         )}
 
-        {/* Per-course summary for selected event */}
-        {selectedEventId && eventSummaries.length > 0 && (
-          (() => {
-            const summary = eventSummaries.find(s => s.event.id === selectedEventId)
-            if (!summary) return null
-            return (
-              <div className="mt-6 bg-white rounded-lg shadow-md p-4">
-                <h2 className="text-lg font-semibold mb-3">Per-Course Summary</h2>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Course</th>
-                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Total</th>
-                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Morning Late</th>
-                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Morning Absent</th>
-                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Afternoon Late</th>
-                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Afternoon Absent</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {summary.courseStats.map((c: any) => (
-                        <tr key={c.course}>
-                          <td className="px-4 py-3 text-sm text-gray-900">{c.course}</td>
-                          <td className="px-4 py-3 text-center text-sm text-gray-700">{c.totalStudents}</td>
-                          <td className="px-4 py-3 text-center text-sm text-orange-600">{c.morningLate}</td>
-                          <td className="px-4 py-3 text-center text-sm text-red-600">{c.morningAbsent}</td>
-                          <td className="px-4 py-3 text-center text-sm text-orange-600">{c.afternoonLate}</td>
-                          <td className="px-4 py-3 text-center text-sm text-red-600">{c.afternoonAbsent}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Late Students */}
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <h3 className="text-xl font-bold text-orange-600 mb-4 flex items-center gap-2">
+              <span className="w-3 h-3 bg-orange-500 rounded-full"></span>
+              Late Students ({late.length})
+            </h3>
+            {late.length === 0 ? (
+              <p className="text-gray-500 text-center py-4">No late students</p>
+            ) : (
+              <div className="space-y-3 max-h-96 overflow-y-auto">
+                {late.map(student => (
+                  <div key={student.id} className="flex items-center gap-4 p-3 bg-orange-50 rounded-lg">
+                    {student.photo ? (
+                      <img src={student.photo} alt={student.name} className="w-12 h-12 rounded-full object-cover" />
+                    ) : (
+                      <div className="w-12 h-12 rounded-full bg-orange-200 flex items-center justify-center text-orange-700 font-bold">
+                        {student.name.charAt(0)}
+                      </div>
+                    )}
+                    <div className="flex-1">
+                      <p className="font-semibold text-gray-800">{student.name}</p>
+                      <p className="text-sm text-gray-600">ID: {student.studentId}</p>
+                    </div>
+                  </div>
+                ))}
               </div>
-            )
-          })()
+            )}
+          </div>
+
+          {/* Absent Students grouped by Course / Year / Section */}
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <h3 className="text-xl font-bold text-red-600 mb-4 flex items-center gap-2">
+              <span className="w-3 h-3 bg-red-500 rounded-full"></span>
+              Absent Students ({absent.reduce((sum, g) => sum + g.students.length, 0)})
+            </h3>
+            {absent.length === 0 ? (
+              <p className="text-gray-500 text-center py-4">No absent students</p>
+            ) : (
+              <div className="space-y-4 max-h-96 overflow-y-auto">
+                {absent.map((group, idx) => (
+                  <div key={idx} className="border border-red-100 rounded-md p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <p className="font-semibold text-gray-800">{group.course} • {group.yearLevel} • {group.section}</p>
+                        <p className="text-sm text-gray-600">Absent: {group.students.length}</p>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      {group.students.slice(0, 20).map(student => (
+                        <div key={student.id} className="flex items-center gap-3 p-2 bg-red-50 rounded">
+                          {student.photo ? (
+                            <img src={student.photo} alt={student.name} className="w-8 h-8 rounded-full object-cover" />
+                          ) : (
+                            <div className="w-8 h-8 rounded-full bg-red-200 flex items-center justify-center text-red-700 font-bold">
+                              {student.name.charAt(0)}
+                            </div>
+                          )}
+                          <div>
+                            <p className="text-sm font-medium text-gray-800">{student.name}</p>
+                            <p className="text-xs text-gray-600">{student.studentId}</p>
+                          </div>
+                        </div>
+                      ))}
+                      {group.students.length > 20 && (
+                        <p className="text-xs text-gray-500">And {group.students.length - 20} more...</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Per-course summary for selected event */}
+        {selectedSummary && (
+          <div className="mt-6 bg-white rounded-lg shadow-md p-4">
+            <h2 className="text-lg font-semibold mb-3">Per-Course Summary</h2>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Course</th>
+                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Total</th>
+                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Morning Late</th>
+                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Morning Absent</th>
+                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Afternoon Late</th>
+                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Afternoon Absent</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {selectedSummary.courseStats.map((c: any) => (
+                    <tr key={c.course}>
+                      <td className="px-4 py-3 text-sm text-gray-900">{c.course}</td>
+                      <td className="px-4 py-3 text-center text-sm text-gray-700">{c.totalStudents}</td>
+                      <td className="px-4 py-3 text-center text-sm text-orange-600">{c.morningLate}</td>
+                      <td className="px-4 py-3 text-center text-sm text-red-600">{c.morningAbsent}</td>
+                      <td className="px-4 py-3 text-center text-sm text-orange-600">{c.afternoonLate}</td>
+                      <td className="px-4 py-3 text-center text-sm text-red-600">{c.afternoonAbsent}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
 
         {!selectedEventId && (

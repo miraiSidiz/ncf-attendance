@@ -33,13 +33,17 @@ export async function POST(request: Request) {
   try {
     const { title, description, startDate, endDate, morningStart, morningEnd, afternoonStart, afternoonEnd, useSessions } = await request.json()
     // basic validation
-    if (!title || !startDate || !endDate) {
-      return NextResponse.json({ error: 'Missing required fields: title, startDate, endDate' }, { status: 400 })
+    const missing: string[] = []
+    if (!title) missing.push('title')
+    if (!startDate) missing.push('startDate')
+    if (!endDate) missing.push('endDate')
+    if (missing.length > 0) {
+      return NextResponse.json({ error: 'Missing required fields', missing }, { status: 400 })
     }
     const s = new Date(startDate)
     const e = new Date(endDate)
     if (isNaN(s.getTime()) || isNaN(e.getTime()) || s > e) {
-      return NextResponse.json({ error: 'Invalid startDate/endDate' }, { status: 400 })
+      return NextResponse.json({ error: 'Invalid startDate/endDate', details: { startDate, endDate } }, { status: 400 })
     }
     // validate session ranges if provided
     const parseMaybeDate = (v: any) => v ? new Date(v) : null
@@ -48,13 +52,13 @@ export async function POST(request: Request) {
     const as = parseMaybeDate(afternoonStart)
     const ae = parseMaybeDate(afternoonEnd)
     if (ms && me && (isNaN(ms.getTime()) || isNaN(me.getTime()) || ms >= me)) {
-      return NextResponse.json({ error: 'Invalid morningStart/morningEnd range' }, { status: 400 })
+      return NextResponse.json({ error: 'Invalid morningStart/morningEnd range', details: { morningStart, morningEnd } }, { status: 400 })
     }
     if (as && ae && (isNaN(as.getTime()) || isNaN(ae.getTime()) || as >= ae)) {
-      return NextResponse.json({ error: 'Invalid afternoonStart/afternoonEnd range' }, { status: 400 })
+      return NextResponse.json({ error: 'Invalid afternoonStart/afternoonEnd range', details: { afternoonStart, afternoonEnd } }, { status: 400 })
     }
     if ((ms && (ms < s || ms > e)) || (me && (me < s || me > e)) || (as && (as < s || as > e)) || (ae && (ae < s || ae > e))) {
-      return NextResponse.json({ error: 'Session times must be within event start and end' }, { status: 400 })
+      return NextResponse.json({ error: 'Session times must be within event start and end', details: { startDate, endDate, morningStart, morningEnd, afternoonStart, afternoonEnd } }, { status: 400 })
     }
     const data: any = {
       title,

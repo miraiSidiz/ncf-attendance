@@ -32,6 +32,8 @@ export async function GET(request: Request) {
     }, {} as Record<string, Record<string, any>>)
 
     const report = students.map(student => {
+      // defensive: ensure student fields are normalized (avoid accidental non-string values)
+      const normalizedStudent = { ...student, yearLevel: student.yearLevel ? String(student.yearLevel) : '' }
       const g = grouped[student.id] || {}
       const morning = g['morning'] || null
       const afternoon = g['afternoon'] || null
@@ -55,7 +57,7 @@ export async function GET(request: Request) {
       }
 
       return {
-        student,
+        student: normalizedStudent,
         morning: { id: morningId, in: morningIn, out: morningOut, status: morningStatus },
         afternoon: { id: afternoonId, in: afternoonIn, out: afternoonOut, status: afternoonStatus },
         status: overall

@@ -55,7 +55,7 @@ providers.push(
   })
 )
 
-export const authOptions = {
+const authOptions = {
   adapter: PrismaAdapter(prisma),
   providers,
   session: { strategy: "jwt" },
@@ -80,6 +80,6 @@ export const authOptions = {
   },
 }
 
-const handler = NextAuth(authOptions)
+const handler = NextAuth(authOptions as any)
 
-export { handler as GET, handler as POST, authOptions }
+export { handler as GET, handler as POST }

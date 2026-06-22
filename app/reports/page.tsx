@@ -14,8 +14,8 @@ interface Student {
 
 interface ReportItem {
   student: Student
-  morning: { in: string | null; out: string | null; status: string }
-  afternoon: { in: string | null; out: string | null; status: string }
+  morning: { id?: string; in: string | null; out: string | null; status: string }
+  afternoon: { id?: string; in: string | null; out: string | null; status: string }
   status: 'PRESENT' | 'LATE' | 'ABSENT' | 'EARLY_LEAVE'
 }
 
@@ -238,8 +238,10 @@ export default function ReportsPage() {
                             ) : (
                               <div className="w-8 h-8 rounded-full bg-gray-300 flex items-center justify-center text-gray-600 mr-3">{item.student.name.charAt(0)}</div>
                             )}
-                            <span className="font-medium text-gray-900">{item.student.name}</span>
                           </div>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className="font-medium text-gray-900">{item.student.name}</span>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{item.student.studentId}</td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{(item.student as any).course || '-'}</td>
