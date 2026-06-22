@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
 import { useSession } from 'next-auth/react'
 import { BrowserMultiFormatReader, NotFoundException } from '@zxing/library'
+import { Settings, RefreshCw, Activity, Upload, Camera, CheckCircle, AlertCircle } from 'lucide-react'
 
 interface Event {
   id: string
@@ -16,6 +17,8 @@ interface Student {
   id: string
   name: string
   photo?: string
+  studentId: string
+  course?: string
 }
 
 interface Attendance {
@@ -27,11 +30,13 @@ interface Attendance {
   timeOut?: string | null
   createdAt: string
 }
+
 export default function ScanPage() {
   const { data: session, status } = useSession()
   const [events, setEvents] = useState<Event[]>([])
   const [selectedEvent, setSelectedEvent] = useState<string>('')
   const [scanning, setScanning] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
   const [scannedStudent, setScannedStudent] = useState<Student | null>(null)
   const [scannedAttendance, setScannedAttendance] = useState<Attendance | null>(null)
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null)
@@ -46,30 +51,60 @@ export default function ScanPage() {
   const [showPermissionHelp, setShowPermissionHelp] = useState<boolean>(false)
   const [diagnostics, setDiagnostics] = useState<any | null>(null)
   const [showDiagnosticsModal, setShowDiagnosticsModal] = useState<boolean>(false)
+  const [showSettings, setShowSettings] = useState<boolean>(false)
+  const [deviceProbeResults, setDeviceProbeResults] = useState<Record<string, string>>({})
+  const [notFoundCount, setNotFoundCount] = useState(0)
+
   const videoRef = useRef<HTMLVideoElement>(null)
-  const [confirming, setConfirming] = useState(false)
-  const [confirmStudent, setConfirmStudent] = useState<Student | null>(null)
-  const [confirmAction, setConfirmAction] = useState<'in' | 'out' | null>(null)
-  const [pendingQr, setPendingQr] = useState<string | null>(null)
   const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null)
   const router = useRouter()
-  const [deviceProbeResults, setDeviceProbeResults] = useState<Record<string,string>>({})
-  const [notFoundCount, setNotFoundCount] = useState(0)
-  const [toast, setToast] = useState<{ text: string; actionLabel?: string; action?: () => void } | null>(null)
 
   const scanModeRef = useRef(scanMode)
   const sessionTypeRef = useRef(sessionType)
   const selectedEventRef = useRef(selectedEvent)
+  const isProcessingRef = useRef(false)
+  const lastScannedQrRef = useRef<{ code: string; time: number } | null>(null)
 
   useEffect(() => { scanModeRef.current = scanMode }, [scanMode])
   useEffect(() => { sessionTypeRef.current = sessionType }, [sessionType])
   useEffect(() => { selectedEventRef.current = selectedEvent }, [selectedEvent])
 
+  // Play audio beep/buzz based on success/error
+  const playBeep = (type: 'success' | 'error') => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
+      if (!AudioContextClass) return
+      const ctx = new AudioContextClass()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+
+      if (type === 'success') {
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(880, ctx.currentTime) // High beep
+        gain.gain.setValueAtTime(0.1, ctx.currentTime)
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
+        osc.start()
+        osc.stop(ctx.currentTime + 0.15)
+      } else {
+        osc.type = 'sawtooth'
+        osc.frequency.setValueAtTime(150, ctx.currentTime) // Low buzz
+        gain.gain.setValueAtTime(0.15, ctx.currentTime)
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35)
+        osc.start()
+        osc.stop(ctx.currentTime + 0.35)
+      }
+    } catch (e) {
+      console.warn('Audio feedback failed', e)
+    }
+  }
+
   // Auto-detect session based on time of day
   useEffect(() => {
     const now = new Date()
     const afterNoon = new Date(now)
-    afterNoon.setHours(13, 0, 0, 0) // 1 PM
+    afterNoon.setHours(13, 0, 0, 0)
     setSessionType(now >= afterNoon ? 'afternoon' : 'morning')
   }, [])
 
@@ -83,57 +118,14 @@ export default function ScanPage() {
     try {
       const res = await fetch('/api/events?scope=scan')
       const data = await res.json()
-      setEvents(data)
-      if (data && data.length > 0 && !selectedEvent) {
-        setSelectedEvent(data[0].id)
+      if (Array.isArray(data)) {
+        setEvents(data)
+        if (data.length > 0 && !selectedEvent) {
+          setSelectedEvent(data[0].id)
+        }
       }
     } catch (error) {
       console.error(error)
-    }
-  }
-
-  const confirmTimeOut = async (confirm: boolean) => {
-    if (!confirm) {
-      setConfirming(false)
-      setConfirmStudent(null)
-      setPendingQr(null)
-      setConfirmAction(null)
-      return
-    }
-
-    const currentSelectedEvent = selectedEventRef.current
-    const currentSessionType = sessionTypeRef.current
-
-    if (!pendingQr || !currentSelectedEvent || !confirmAction) {
-      setMessage({ text: 'Missing data for confirmation', type: 'error' })
-      setConfirming(false)
-      return
-    }
-
-    try {
-      const res = await fetch('/api/attendance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ qrCode: pendingQr, eventId: currentSelectedEvent, action: confirmAction, sessionType: currentSessionType })
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setScannedStudent(data.student)
-        setScannedAttendance(data.attendance)
-        setMessage({ text: `${confirmAction === 'out' ? 'Time-out' : 'Time-in'} recorded for ${data.student.name}`, type: 'success' })
-        try { if (typeof navigator !== 'undefined' && (navigator as any).vibrate) (navigator as any).vibrate(50) } catch (e) {}
-      } else {
-        const data = await res.json()
-        setMessage({ text: data.error || 'Failed to record attendance', type: 'error' })
-      }
-    } catch (err) {
-      console.error(err)
-      setMessage({ text: 'Failed to record attendance', type: 'error' })
-    } finally {
-      setConfirming(false)
-      setConfirmStudent(null)
-      setPendingQr(null)
-      setConfirmAction(null)
     }
   }
 
@@ -141,9 +133,10 @@ export default function ScanPage() {
     if (session) {
       fetchEvents()
       codeReaderRef.current = new BrowserMultiFormatReader()
-      // feature-detect getUserMedia (including older prefixed APIs) and polyfill if needed
-      const hasModern = typeof navigator !== 'undefined' && !!(navigator.mediaDevices && (navigator.mediaDevices as any).getUserMedia)
+      
+      const hasModern = typeof navigator !== 'undefined' && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
       const hasPrefixed = typeof navigator !== 'undefined' && (!!(navigator as any).getUserMedia || !!(navigator as any).webkitGetUserMedia || !!(navigator as any).mozGetUserMedia)
+      
       if (!hasModern && hasPrefixed) {
         const legacyGet = (navigator as any).getUserMedia || (navigator as any).webkitGetUserMedia || (navigator as any).mozGetUserMedia
         try {
@@ -156,24 +149,21 @@ export default function ScanPage() {
                 })
               }
             }
-          } else {
-            // no legacy getUserMedia function available
           }
         } catch (err) {
           console.error('Could not polyfill legacy getUserMedia', err)
         }
       }
-      setHasGetUserMediaCompat(!!(typeof navigator !== 'undefined' && navigator.mediaDevices && (navigator.mediaDevices as any).getUserMedia))
-      // load autoStart preference from localStorage
+
+      setHasGetUserMediaCompat(!!(typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia))
+
       try {
         if (typeof window !== 'undefined') {
           const stored = window.localStorage.getItem('scan.autoStart')
           if (stored !== null) setAutoStart(stored === 'true')
         }
-      } catch (e) {
-        // ignore
-      }
-      // enumerate video input devices for camera selection
+      } catch (e) {}
+
       if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
         navigator.mediaDevices.enumerateDevices()
           .then((list) => {
@@ -193,13 +183,78 @@ export default function ScanPage() {
     }
   }, [session])
 
-  // Show a friendly hint after several failed decode attempts
+  // Show a warning toast on sustained failures to decode
   useEffect(() => {
-    if (notFoundCount >= 6) {
-      setMessage({ text: 'No QR detected — try moving the camera closer/farther, improving lighting, or switching camera.', type: 'error' })
-      setToast({ text: 'Try switching camera or capture a photo', actionLabel: 'Switch Camera', action: switchCamera })
+    if (notFoundCount >= 15) {
+      setMessage({ text: 'Ensure the QR code is centered and well lit.', type: 'error' })
     }
   }, [notFoundCount])
+
+  const handleScan = async (qrCode: string) => {
+    // 1. Prevent overlapping scans
+    if (isProcessingRef.current) return
+
+    // 2. Prevent scanning the same code multiple times in a row within 3 seconds (debounce/cooldown)
+    const nowTime = Date.now()
+    if (
+      lastScannedQrRef.current &&
+      lastScannedQrRef.current.code === qrCode &&
+      nowTime - lastScannedQrRef.current.time < 3000
+    ) {
+      return
+    }
+
+    isProcessingRef.current = true
+    setIsProcessing(true)
+    lastScannedQrRef.current = { code: qrCode, time: nowTime }
+
+    const currentScanMode = scanModeRef.current
+    const currentSessionType = sessionTypeRef.current
+    const currentSelectedEvent = selectedEventRef.current
+
+    try {
+      // Trigger short vibration immediately on camera decode
+      try { if (typeof navigator !== 'undefined' && (navigator as any).vibrate) (navigator as any).vibrate(40) } catch (e) {}
+
+      const res = await fetch('/api/attendance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          qrCode,
+          eventId: currentSelectedEvent,
+          action: currentScanMode !== 'auto' ? currentScanMode : undefined,
+          sessionType: currentSessionType
+        })
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setScannedStudent(data.student)
+        setScannedAttendance(data.attendance)
+
+        const acted = data.attendance?.timeOut ? 'Time-out recorded' : 'Attendance recorded'
+        setMessage({ text: `${acted} for ${data.student.name}`, type: 'success' })
+        
+        playBeep('success')
+        try { if (typeof navigator !== 'undefined' && (navigator as any).vibrate) (navigator as any).vibrate([60, 50, 60]) } catch (e) {}
+      } else {
+        const data = await res.json()
+        setMessage({ text: data.error || 'Failed to record attendance', type: 'error' })
+        playBeep('error')
+        try { if (typeof navigator !== 'undefined' && (navigator as any).vibrate) (navigator as any).vibrate(250) } catch (e) {}
+      }
+    } catch (error) {
+      console.error(error)
+      setMessage({ text: 'Network error. Failed to record attendance.', type: 'error' })
+      playBeep('error')
+    } finally {
+      // Release scanner processing lock after 1.2 seconds, camera keeps running
+      setTimeout(() => {
+        isProcessingRef.current = false
+        setIsProcessing(false)
+      }, 1200)
+    }
+  }
 
   const handleFileUpload = async (file: File | null) => {
     if (!file || !codeReaderRef.current) return
@@ -209,7 +264,6 @@ export default function ScanPage() {
       const img = new Image()
       img.src = url
       await new Promise((res, rej) => { img.onload = res; img.onerror = rej })
-      // try decoding from the image element
       try {
         const result = await codeReaderRef.current.decodeFromImageElement(img)
         if (result) {
@@ -227,8 +281,188 @@ export default function ScanPage() {
     }
   }
 
+  const startScanning = async () => {
+    if (!selectedEvent) {
+      setMessage({ text: 'Please select an event first', type: 'error' })
+      return
+    }
+
+    if (!codeReaderRef.current || !videoRef.current) return
+
+    if (!hasGetUserMediaCompat) {
+      setMessage({ text: 'Camera API not available in this browser. You can upload a photo of the QR code instead.', type: 'error' })
+      setScanning(false)
+      return
+    }
+
+    const tryDevicesAndStart = async () => {
+      try {
+        if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+          const list = await navigator.mediaDevices.enumerateDevices()
+          const cams = list.filter((d) => d.kind === 'videoinput')
+          setDevices(cams)
+        }
+      } catch (e) {
+        console.error('Could not refresh devices', e)
+      }
+
+      const tryList = devices.length ? devices : []
+      for (const dev of tryList) {
+        const ok = await testDeviceAvailable(dev.deviceId)
+        if (ok) {
+          setDeviceId(dev.deviceId)
+          try {
+            if (codeReaderRef.current && videoRef.current) {
+              codeReaderRef.current.reset()
+              try {
+                const hiResConstraints: any = { video: { deviceId: { exact: dev.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } } }
+                const tmpStream = await navigator.mediaDevices.getUserMedia(hiResConstraints)
+                if (videoRef.current) videoRef.current.srcObject = tmpStream
+                tmpStream.getTracks().forEach((t) => t.stop())
+              } catch (e) {}
+
+              codeReaderRef.current.decodeFromVideoDevice(dev.deviceId, videoRef.current, (result, err) => {
+                if (result) {
+                  setNotFoundCount(0)
+                  handleScan(result.getText())
+                }
+                if (err) {
+                  if ((err as any)?.name === 'NotFoundException' || err instanceof NotFoundException) {
+                    setNotFoundCount(c => c + 1)
+                    return
+                  }
+                  console.error(err)
+                }
+              })
+              setScanning(true)
+              setMessage(null)
+              return true
+            }
+          } catch (e) {
+            console.error('Failed to start on device', dev.deviceId, e)
+          }
+        }
+      }
+
+      const okDefault = await testDeviceAvailable(null)
+      if (okDefault) {
+        try {
+          if (codeReaderRef.current && videoRef.current) {
+            codeReaderRef.current.reset()
+            codeReaderRef.current.decodeFromVideoDevice(null, videoRef.current, (result, err) => {
+              if (result) handleScan(result.getText())
+              if (err) console.error(err)
+            })
+            setScanning(true)
+            setMessage(null)
+            return true
+          }
+        } catch (e) {
+          console.error('Failed to start default device', e)
+        }
+      }
+
+      return false
+    }
+
+    try {
+      setScanning(true)
+      setMessage(null)
+      if (!deviceId) {
+        const started = await tryDevicesAndStart()
+        if (!started) {
+          setMessage({ text: 'No available camera found. Check permissions or upload a QR image.', type: 'error' })
+          setScanning(false)
+        }
+        return
+      }
+
+      try {
+        const constraints: any = deviceId
+          ? { video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } } }
+          : { video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } } }
+        const warm = await navigator.mediaDevices.getUserMedia(constraints)
+        if (videoRef.current) videoRef.current.srcObject = warm
+        warm.getTracks().forEach((t) => t.stop())
+      } catch (e) {}
+
+      await codeReaderRef.current.decodeFromVideoDevice(deviceId ?? null, videoRef.current, async (result, err) => {
+        if (result) {
+          setNotFoundCount(0)
+          handleScan(result.getText())
+        }
+        if (err) {
+          const name = (err && err.name) || ''
+          if ((err as any)?.name === 'NotFoundException' || err instanceof NotFoundException) {
+            setNotFoundCount(c => c + 1)
+            return
+          }
+          console.error(err)
+          if (name === 'NotFoundError' || name === 'NotReadableError') {
+            const fallbackStarted = await tryDevicesAndStart()
+            if (!fallbackStarted) {
+              setMessage({ text: 'Camera not found or unavailable. Check camera device and permissions.', type: 'error' })
+              setScanning(false)
+            }
+            return
+          } else if (name === 'NotAllowedError' || name === 'SecurityError') {
+            setMessage({ text: 'Camera access denied. Allow camera permission in your browser.', type: 'error' })
+            setScanning(false)
+            return
+          } else {
+            setMessage({ text: 'Failed to start camera: ' + (err && err.message ? err.message : String(err)), type: 'error' })
+            setScanning(false)
+            return
+          }
+        }
+      })
+    } catch (error) {
+      console.error(error)
+      const emsg = (error as any)?.message || String(error)
+      if (emsg.includes('getUserMedia')) {
+        setMessage({ text: 'Failed to start camera. Camera API appears blocked. Check browser settings.', type: 'error' })
+      } else {
+        setMessage({ text: 'Failed to start camera: ' + emsg, type: 'error' })
+      }
+      setScanning(false)
+    }
+  }
+
+  const stopScanning = () => {
+    if (codeReaderRef.current) {
+      codeReaderRef.current.reset()
+    }
+    setScanning(false)
+  }
+
+  const switchCamera = async () => {
+    if (!devices || devices.length <= 1) return
+    const idx = devices.findIndex(d => d.deviceId === deviceId)
+    const next = devices[(idx + 1) % devices.length]
+    setDeviceId(next.deviceId)
+    setNotFoundCount(0)
+    if (scanning) {
+      stopScanning()
+      setTimeout(() => startScanning().catch(() => {}), 300)
+    }
+  }
+
+  const testDeviceAvailable = async (dId: string | null) => {
+    try {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !(navigator.mediaDevices as any).getUserMedia) return false
+      const constraints: any = dId
+        ? { video: { deviceId: { exact: dId }, facingMode: { ideal: 'environment' } } }
+        : { video: { facingMode: { ideal: 'environment' } } }
+      const stream = await (navigator.mediaDevices as any).getUserMedia(constraints)
+      stream.getTracks().forEach((t: MediaStreamTrack) => t.stop())
+      return true
+    } catch (e) {
+      return false
+    }
+  }
+
   const probeDevices = async () => {
-    const results: Record<string,string> = {}
+    const results: Record<string, string> = {}
     try {
       if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
         const list = await navigator.mediaDevices.enumerateDevices()
@@ -246,20 +480,6 @@ export default function ScanPage() {
       console.error('probeDevices failed', err)
     }
     setDeviceProbeResults(results)
-  }
-
-  const testDeviceAvailable = async (dId: string | null) => {
-    try {
-      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !(navigator.mediaDevices as any).getUserMedia) return false
-      const constraints: any = dId
-        ? { video: { deviceId: { exact: dId }, facingMode: { ideal: 'environment' } } }
-        : { video: { facingMode: { ideal: 'environment' } } }
-      const stream = await (navigator.mediaDevices as any).getUserMedia(constraints)
-      stream.getTracks().forEach((t: MediaStreamTrack) => t.stop())
-      return true
-    } catch (e) {
-      return false
-    }
   }
 
   const gatherDiagnostics = async () => {
@@ -289,629 +509,397 @@ export default function ScanPage() {
     return result
   }
 
-  const startScanning = async () => {
-    if (!selectedEvent) {
-      setMessage({ text: 'Please select an event first', type: 'error' })
-      return
-    }
-
-    if (!codeReaderRef.current || !videoRef.current) return
-
-    // Ensure Media Devices API is available (modern or prefixed)
-    if (!hasGetUserMediaCompat) {
-      setMessage({ text: 'Camera API not available in this browser. You can upload a photo of the QR code instead.', type: 'error' })
-      setScanning(false)
-      return
-    }
-
-    
-
-    const tryDevicesAndStart = async () => {
-      // ensure we have an up-to-date device list
-      try {
-        if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-          const list = await navigator.mediaDevices.enumerateDevices()
-          const cams = list.filter((d) => d.kind === 'videoinput')
-          setDevices(cams)
-        }
-      } catch (e) {
-        console.error('Could not refresh devices', e)
-      }
-
-      const tryList = devices.length ? devices : []
-              for (const dev of tryList) {
-        const ok = await testDeviceAvailable(dev.deviceId)
-        if (ok) {
-          setDeviceId(dev.deviceId)
-          try {
-            if (codeReaderRef.current && videoRef.current) {
-              codeReaderRef.current.reset()
-              // warm-up camera with higher resolution before handing to ZXing
-              try {
-                const hiResConstraints: any = { video: { deviceId: { exact: dev.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } } }
-                const tmpStream = await navigator.mediaDevices.getUserMedia(hiResConstraints)
-                // attach briefly to the video element to improve camera selection
-                if (videoRef.current) videoRef.current.srcObject = tmpStream
-                tmpStream.getTracks().forEach((t) => t.stop())
-              } catch (e) {
-                // ignore warm-up errors, continue to start ZXing
-              }
-                      codeReaderRef.current.decodeFromVideoDevice(dev.deviceId, videoRef.current, (result, err) => {
-                        if (result) {
-                          setNotFoundCount(0)
-                          handleScan(result.getText())
-                        }
-                        if (err) {
-                          // suppress noisy NotFound exceptions; track them to show a helpful hint
-                          if ((err as any)?.name === 'NotFoundException' || err instanceof NotFoundException) {
-                            setNotFoundCount(c => c + 1)
-                            return
-                          }
-                          console.error(err)
-                        }
-                      })
-              setScanning(true)
-              setMessage(null)
-              return true
-            }
-          } catch (e) {
-            console.error('Failed to start on device', dev.deviceId, e)
-          }
-        }
-      }
-
-      // try default device (null)
-      const okDefault = await testDeviceAvailable(null)
-      if (okDefault) {
-        try {
-          if (codeReaderRef.current && videoRef.current) {
-            codeReaderRef.current.reset()
-            codeReaderRef.current.decodeFromVideoDevice(null, videoRef.current, (result, err) => {
-              if (result) handleScan(result.getText())
-              if (err) console.error(err)
-            })
-            setScanning(true)
-            setMessage(null)
-            return true
-          }
-        } catch (e) {
-          console.error('Failed to start default device', e)
-        }
-      }
-
-      return false
-    }
-
-    try {
-      setScanning(true)
-      setMessage(null)
-      // if no device selected, try all devices
-      if (!deviceId) {
-        const started = await tryDevicesAndStart()
-        if (!started) {
-          setMessage({ text: 'No available camera found. Try uploading a QR image or check device permissions.', type: 'error' })
-          setScanning(false)
-        }
-        return
-      }
-
-      // attempt a hi-res permission warmup to improve decode reliability
-      try {
-        const constraints: any = deviceId
-          ? { video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } } }
-          : { video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } } }
-        const warm = await navigator.mediaDevices.getUserMedia(constraints)
-        if (videoRef.current) videoRef.current.srcObject = warm
-        warm.getTracks().forEach((t) => t.stop())
-      } catch (e) {
-        // non-fatal; ZXing will still try with default constraints
-      }
-
-      await codeReaderRef.current.decodeFromVideoDevice(deviceId ?? null, videoRef.current, async (result, err) => {
-        if (result) {
-          setNotFoundCount(0)
-          handleScan(result.getText())
-        }
-        if (err) {
-          const name = (err && err.name) || ''
-          // treat ZXing not-found exceptions as transient; count them and show a hint after a few
-          if ((err as any)?.name === 'NotFoundException' || err instanceof NotFoundException) {
-            setNotFoundCount(c => c + 1)
-            return
-          }
-          console.error(err)
-          if (name === 'NotFoundError' || name === 'NotReadableError') {
-            // attempt other cameras automatically
-            const fallbackStarted = await tryDevicesAndStart()
-            if (!fallbackStarted) {
-              setMessage({ text: 'Camera not found or unavailable. Check camera device and permissions.', type: 'error' })
-              setScanning(false)
-            }
-            return
-          } else if (name === 'NotAllowedError' || name === 'SecurityError') {
-            setMessage({ text: 'Camera access denied. Allow camera permission for this site.', type: 'error' })
-            setScanning(false)
-            return
-          } else {
-            setMessage({ text: 'Failed to start camera: ' + (err && err.message ? err.message : String(err)), type: 'error' })
-            setScanning(false)
-            return
-          }
-        }
-      })
-    } catch (error) {
-      console.error(error)
-      const emsg = (error as any)?.message || String(error)
-      if (emsg.includes('getUserMedia')) {
-        setMessage({ text: 'Failed to start camera. Camera API appears unavailable or blocked. Check browser permissions and that no other app is using the camera.', type: 'error' })
-      } else {
-        setMessage({ text: 'Failed to start camera: ' + emsg, type: 'error' })
-      }
-      setScanning(false)
-    }
-  }
-
-  const stopScanning = () => {
-    if (codeReaderRef.current) {
-      codeReaderRef.current.reset()
-    }
-    setScanning(false)
-  }
-
-  const handleScan = async (qrCode: string) => {
-    const currentScanMode = scanModeRef.current
-    const currentSessionType = sessionTypeRef.current
-    const currentSelectedEvent = selectedEventRef.current
-
-    try {
-      stopScanning()
-      // If forcing Time In/Out, fetch student info and show confirmation before sending
-      if (currentScanMode === 'out' || currentScanMode === 'in') {
-        try {
-          const studentsRes = await fetch('/api/students')
-          const students = await studentsRes.json()
-          const student = students.find((s: any) => s.qrCode === qrCode)
-          if (!student) {
-            setMessage({ text: 'Student not found for this QR', type: 'error' })
-            return
-          }
-          setConfirmStudent(student)
-          setPendingQr(qrCode)
-          setConfirmAction(currentScanMode)
-          setConfirming(true)
-          return
-        } catch (err) {
-          console.error('Lookup failed', err)
-          setMessage({ text: 'Failed to lookup student', type: 'error' })
-          return
-        }
-      }
-
-      const res = await fetch('/api/attendance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ qrCode, eventId: currentSelectedEvent, action: currentScanMode !== 'auto' ? currentScanMode : undefined, sessionType: currentSessionType })
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-        setScannedStudent(data.student)
-        setScannedAttendance(data.attendance)
-
-        // Choose message based on whether this was a time-in or time-out
-        const acted = data.attendance?.timeOut ? 'Time-out recorded' : 'Attendance recorded'
-        setMessage({ text: `${acted} for ${data.student.name}`, type: 'success' })
-        try { if (typeof navigator !== 'undefined' && (navigator as any).vibrate) (navigator as any).vibrate(50) } catch (e) {}
-      } else {
-        const data = await res.json()
-        setMessage({ text: data.error || 'Failed to record attendance', type: 'error' })
-      }
-    } catch (error) {
-      console.error(error)
-      setMessage({ text: 'Failed to record attendance', type: 'error' })
-    }
-  }
-
-  const switchCamera = async () => {
-    if (!devices || devices.length <= 1) return
-    const idx = devices.findIndex(d => d.deviceId === deviceId)
-    const next = devices[(idx + 1) % devices.length]
-    setDeviceId(next.deviceId)
-    setNotFoundCount(0)
-    setToast(null)
-    // restart scanning to pick up the new device
-    if (scanning) {
-      stopScanning()
-      // give a small pause to allow reset
-      setTimeout(() => startScanning().catch(()=>{}), 300)
-    }
-  }
-
-  const handleCapture = async () => {
-    if (!videoRef.current || !codeReaderRef.current) return
-    try {
-      const video = videoRef.current
-      const w = video.videoWidth || 1280
-      const h = video.videoHeight || 720
-      const canvas = document.createElement('canvas')
-      canvas.width = w
-      canvas.height = h
-      const ctx = canvas.getContext('2d')
-      if (!ctx) throw new Error('Could not get canvas context')
-      ctx.drawImage(video, 0, 0, w, h)
-      const dataUrl = canvas.toDataURL('image/png')
-      const img = new Image()
-      img.src = dataUrl
-      await new Promise((res, rej) => { img.onload = res; img.onerror = rej })
-      try {
-        const result = await codeReaderRef.current.decodeFromImageElement(img)
-        if (result) {
-          handleScan(result.getText())
-        }
-      } catch (err) {
-        setMessage({ text: 'No QR detected in the captured photo. Try again or switch camera.', type: 'error' })
-      }
-    } catch (err) {
-      console.error('Capture failed', err)
-      setMessage({ text: 'Failed to capture photo for decoding.', type: 'error' })
-    }
-  }
-
   if (status === 'loading') {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600"></div>
+      <div className="min-h-screen flex items-center justify-center bg-gray-900">
+        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500"></div>
       </div>
     )
   }
 
-  if (!session) {
-    return null
-  }
+  if (!session) return null
+
+  const activeEventTitle = events.find(e => e.id === selectedEvent)?.title || 'No Event Selected'
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-screen bg-gray-50 text-gray-800">
+      <style>{`
+        @keyframes scanLine {
+          0% { top: 4%; }
+          50% { top: 96%; }
+          100% { top: 4%; }
+        }
+        .laser-sweep {
+          animation: scanLine 2.5s linear infinite;
+        }
+      `}</style>
+
       <Sidebar />
-      <main className="ml-64 flex-1 p-8 bg-gray-50">
-        <h1 className="text-3xl font-bold mb-6">Scan QR Code</h1>
 
-        <div className="max-w-2xl mx-auto">
-          <div className="mb-6">
-            <label className="block text-sm font-medium text-gray-700 mb-2">Select Event</label>
-            <select
-              value={selectedEvent}
-              onChange={(e) => setSelectedEvent(e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={scanning}
+      <main className="flex-1 p-4 md:p-8 md:ml-64 pt-20 md:pt-8 min-h-screen flex flex-col items-center">
+        <div className="w-full max-w-lg flex flex-col gap-6">
+          
+          {/* Main Title Header */}
+          <div className="flex justify-between items-center border-b border-gray-200 pb-3">
+            <div>
+              <h1 className="text-2xl font-extrabold text-gray-900 tracking-tight">Scan Attendance</h1>
+              <p className="text-sm text-gray-500 mt-1">Event: <span className="font-semibold text-blue-600">{activeEventTitle}</span></p>
+            </div>
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className={`p-2 rounded-lg transition-colors border ${
+                showSettings 
+                  ? 'bg-blue-50 border-blue-200 text-blue-600' 
+                  : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-100'
+              }`}
+              title="Toggle settings panel"
             >
-              <option value="">-- Select an event --</option>
-              {events.map((event) => (
-                <option key={event.id} value={event.id}>{event.title}</option>
-              ))}
-            </select>
+              <Settings size={20} />
+            </button>
           </div>
 
-          {devices.length > 0 && (
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-2">Select Camera</label>
-              <select
-                value={deviceId ?? ''}
-                onChange={(e) => setDeviceId(e.target.value || null)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                disabled={scanning}
-              >
-                {devices.map((d) => (
-                  <option key={d.deviceId} value={d.deviceId}>{d.label || d.deviceId}</option>
-                ))}
-              </select>
-            </div>
-          )}
+          {/* Collapsible settings panel */}
+          {showSettings && (
+            <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm flex flex-col gap-4 animate-fadeIn">
+              <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider flex items-center gap-2 border-b pb-2">
+                <Settings size={16} /> Configuration & Advanced
+              </h3>
 
-          <div className="mt-6">
-            <h4 className="text-sm font-medium mb-2">Diagnostics</h4>
-            <div className="text-xs text-gray-600">
-
-          {/* Scan Mode control removed — replaced by explicit session buttons below to avoid conflicting state */}
-              <p>Detected cameras: {devices.length}</p>
-              <ul className="list-disc ml-6">
-                {devices.map(d => (
-                  <li key={d.deviceId}>{d.label || d.deviceId} — {deviceProbeResults[d.deviceId] ?? 'unknown'}</li>
-                ))}
-              </ul>
-              <div className="mt-2">
-                <button onClick={probeDevices} className="px-3 py-1 bg-gray-200 rounded">Probe Devices</button>
-                <button onClick={() => { setDeviceProbeResults({}); probeDevices(); }} className="ml-2 px-3 py-1 bg-blue-100 rounded">Refresh & Probe</button>
-                <button onClick={async () => { const d = await gatherDiagnostics(); setDiagnostics(d); setShowDiagnosticsModal(true) }} className="ml-2 px-3 py-1 bg-green-100 rounded">Run Diagnostics</button>
+              {/* Event Selector */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1">Select Event</label>
+                <select
+                  value={selectedEvent}
+                  onChange={(e) => setSelectedEvent(e.target.value)}
+                  className="w-full text-sm px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"
+                  disabled={scanning}
+                >
+                  <option value="">-- Select an event --</option>
+                  {events.map((event) => (
+                    <option key={event.id} value={event.id}>{event.title}</option>
+                  ))}
+                </select>
               </div>
-            </div>
-          </div>
 
-          {!hasGetUserMediaCompat && (
-            <div className="mb-6">
-              <p className="text-sm text-gray-600 mb-2">Camera API not available — you can upload an image containing the QR code instead.</p>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => handleFileUpload(e.target.files ? e.target.files[0] : null)}
-                className="w-full"
-                disabled={scanning}
-              />
-            </div>
-          )}
+              {/* Camera Selector */}
+              {devices.length > 0 && (
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">Select Camera</label>
+                  <select
+                    value={deviceId ?? ''}
+                    onChange={(e) => setDeviceId(e.target.value || null)}
+                    className="w-full text-sm px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"
+                    disabled={scanning}
+                  >
+                    {devices.map((d) => (
+                      <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${d.deviceId.slice(0, 5)}`}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
-          {permissionDenied && (
-            <div className="mt-4 p-4 rounded bg-yellow-50 border border-yellow-200">
-              <p className="text-sm text-yellow-800">Camera permission is denied. To enable scanning, allow camera access for this site in your browser settings.</p>
-              <div className="mt-2 flex gap-2">
-                <button onClick={() => setShowPermissionHelp(true)} className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded">How to enable</button>
-                <button onClick={() => { setPermissionDenied(false); setMessage(null) }} className="px-3 py-1 bg-gray-100 rounded">Dismiss</button>
-              </div>
-            </div>
-          )}
+              {/* Upload fallback */}
+              {!hasGetUserMediaCompat && (
+                <div className="border border-dashed border-gray-300 rounded-lg p-3 text-center">
+                  <p className="text-xs text-gray-600 mb-2">Camera API not supported. Upload a QR photo instead:</p>
+                  <label className="cursor-pointer inline-flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 text-xs font-semibold rounded-lg hover:bg-blue-100 transition-colors">
+                    <Upload size={14} /> Upload QR Image
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => handleFileUpload(e.target.files ? e.target.files[0] : null)}
+                      className="hidden"
+                      disabled={scanning}
+                    />
+                  </label>
+                </div>
+              )}
 
-          {showPermissionHelp && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-              <div className="bg-white rounded-lg p-6 w-full max-w-xl">
-                <h3 className="text-lg font-semibold mb-4">Enable Camera Access</h3>
-                <p className="mb-2">Follow these steps to enable camera access for this site:</p>
-                {(() => {
-                  // simple platform detection
-                  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''
-                  const isAndroid = /Android/i.test(ua)
-                  const isIOS = /iPhone|iPad|iPod/i.test(ua)
-                  if (isAndroid) {
-                    return (
-                      <ul className="list-disc ml-6 text-sm mb-4">
-                        <li>On Android Chrome: tap the lock icon in the address bar → Site settings → Camera → Allow.</li>
-                        <li>If you don't see the lock icon, open browser settings → Site settings → Camera.</li>
-                        <li>Reload the page after changing permissions.</li>
-                      </ul>
-                    )
-                  }
-                  if (isIOS) {
-                    return (
-                      <ul className="list-disc ml-6 text-sm mb-4">
-                        <li>On iOS Safari: open Settings → Safari → Camera and ensure this site is allowed.</li>
-                        <li>If denied, go to Settings → Safari → Clear Website Data, then reload to re-prompt.</li>
-                        <li>In some cases, enabling Request Desktop Site temporarily shows the prompt on reload.</li>
-                      </ul>
-                    )
-                  }
-                  return (
-                    <ul className="list-disc ml-6 text-sm mb-4">
-                      <li>Check the lock/secure icon in the address bar → site settings → Camera → Allow.</li>
-                      <li>Clear site permissions and reload to re-prompt if necessary.</li>
-                    </ul>
-                  )
-                })()}
+              {/* Advanced Diagnostics */}
+              <div className="border-t pt-3 flex flex-col gap-2">
+                <div className="flex justify-between items-center text-xs text-gray-500">
+                  <span>Detected cameras: {devices.length}</span>
+                  <button 
+                    onClick={probeDevices} 
+                    className="text-blue-600 hover:underline font-semibold"
+                  >
+                    Probe Devices
+                  </button>
+                </div>
                 <div className="flex gap-2">
-                  <button onClick={() => setShowPermissionHelp(false)} className="flex-1 bg-gray-300 px-4 py-2 rounded">Close</button>
+                  <button 
+                    onClick={async () => { const d = await gatherDiagnostics(); setDiagnostics(d); setShowDiagnosticsModal(true) }} 
+                    className="flex-1 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium rounded transition-colors flex items-center justify-center gap-1"
+                  >
+                    <Activity size={12} /> Run Diagnostics
+                  </button>
                 </div>
               </div>
             </div>
           )}
 
-          {showDiagnosticsModal && diagnostics && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-              <div className="bg-white rounded-lg p-6 w-full max-w-2xl overflow-y-auto max-h-[80vh]">
-                <h3 className="text-lg font-semibold mb-4">Diagnostics</h3>
-                <pre className="text-xs bg-gray-50 p-3 rounded mb-4 overflow-auto">{JSON.stringify(diagnostics, null, 2)}</pre>
-                <div className="flex gap-2">
-                  <button onClick={() => { navigator.clipboard?.writeText(JSON.stringify(diagnostics)).catch(()=>{}); setShowDiagnosticsModal(false) }} className="flex-1 bg-blue-600 text-white px-4 py-2 rounded">Copy JSON</button>
-                  <button onClick={() => setShowDiagnosticsModal(false)} className="flex-1 bg-gray-300 px-4 py-2 rounded">Close</button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="bg-white rounded-lg shadow-md overflow-hidden">
-            <video
-              ref={videoRef}
-              className="w-full aspect-video bg-black"
-              // mobile-friendly attributes
-              playsInline
-              muted
-              autoPlay
-            />
-          </div>
-
-          <div className="mt-3 flex justify-center">
-            <button
-              onClick={async () => {
-                try {
-                      if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                        // prefer rear camera on mobile
-                        const constraints: any = deviceId
-                          ? { video: { deviceId: { exact: deviceId }, facingMode: { ideal: 'environment' } } }
-                          : { video: { facingMode: { ideal: 'environment' } } }
-
-                        const s = await navigator.mediaDevices.getUserMedia(constraints)
-                        // attach briefly to prompt permission; then stop
-                        if (videoRef.current) {
-                          try {
-                            videoRef.current.playsInline = true
-                            videoRef.current.muted = true
-                            videoRef.current.autoplay = true
-                            videoRef.current.srcObject = s
-                          } catch (e) {
-                            console.warn('Could not set video attributes on ref', e)
-                          }
-                        }
-                        s.getTracks().forEach((t) => t.stop())
-                        setCameraAllowed(true)
-                        setPermissionDenied(false)
-                        setMessage({ text: 'Camera permission requested. Starting scanner...', type: 'success' })
-                        // auto-start scanning now that permission was granted (respect user preference)
-                        if (autoStart) {
-                          try {
-                            await startScanning()
-                          } catch (e) {
-                            console.warn('Auto-start scanning failed', e)
-                          }
-                        }
-                        // re-enumerate devices after permission
-                        try { const list = await navigator.mediaDevices.enumerateDevices(); setDevices(list.filter((d:any)=>d.kind==='videoinput')) } catch(e){}
-                      }
-                } catch (err) {
-                  console.error('Camera permission failed', err)
-                      setPermissionDenied(true)
-                      setMessage({ text: 'Camera permission failed or was denied.', type: 'error' })
-                }
-              }}
-              className="px-3 py-1 bg-gray-100 rounded"
-            >
-              Allow Camera (mobile)
-            </button>
-                <label className="ml-4 inline-flex items-center text-sm">
-                  <input
-                    type="checkbox"
-                    checked={autoStart}
-                    onChange={(e) => {
-                      const v = e.target.checked
-                      setAutoStart(v)
-                      try { if (typeof window !== 'undefined') window.localStorage.setItem('scan.autoStart', String(v)) } catch (e) {}
-                    }}
-                    className="mr-2"
-                  />
-                  Auto-start on permission
-                </label>
-            <button
-              title="Tap to prompt camera permission — prefers rear camera."
-              aria-label="Camera help"
-              className="ml-3 text-xs text-gray-500"
-            >
-              ⓘ
-            </button>
-          </div>
-
-          <div className="mt-6 flex gap-4 justify-center">
-            {!scanning ? (
-              <button
-                onClick={startScanning}
-                className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 font-medium"
-                disabled={!events.length || (!cameraAllowed && hasGetUserMediaCompat)}
-              >
-                {events.length ? 'Start Scanning' : 'No events available'}
-              </button>
-            ) : (
-              <button
-                onClick={stopScanning}
-                className="bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700 font-medium"
-              >
-                Stop Scanning
-              </button>
-            )}
-            <button onClick={handleCapture} className="ml-2 px-4 py-3 bg-gray-100 rounded">Capture Photo</button>
-            <button onClick={() => { setNotFoundCount(0); setToast(null); switchCamera() }} className="ml-2 px-4 py-3 bg-yellow-100 rounded">Switch Camera</button>
-          </div>
-
-          {/* Session selector */}
-          <div className="mt-4 flex flex-col items-center gap-2">
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-gray-700">Session:</label>
+          {/* Quick Session Mode selector (Large mobile friendly buttons) */}
+          <div className="flex flex-col gap-3">
+            <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Attendance Mode</span>
+            
+            <div className="grid grid-cols-5 bg-gray-200/70 p-1 rounded-xl gap-1">
               <button
                 onClick={() => setScanMode('auto')}
-                className={`px-3 py-1 rounded ${scanMode === 'auto' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+                className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                  scanMode === 'auto'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-gray-700 hover:bg-gray-300/40'
+                }`}
               >
                 Auto
               </button>
+              
+              <button
+                onClick={() => { setSessionType('morning'); setScanMode('in') }}
+                className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                  sessionType === 'morning' && scanMode === 'in'
+                    ? 'bg-green-600 text-white shadow-sm'
+                    : 'text-gray-700 hover:bg-gray-300/40'
+                }`}
+              >
+                AM In
+              </button>
+
+              <button
+                onClick={() => { setSessionType('morning'); setScanMode('out') }}
+                className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                  sessionType === 'morning' && scanMode === 'out'
+                    ? 'bg-red-600 text-white shadow-sm'
+                    : 'text-gray-700 hover:bg-gray-300/40'
+                }`}
+              >
+                AM Out
+              </button>
+
+              <button
+                onClick={() => { setSessionType('afternoon'); setScanMode('in') }}
+                className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                  sessionType === 'afternoon' && scanMode === 'in'
+                    ? 'bg-green-600 text-white shadow-sm'
+                    : 'text-gray-700 hover:bg-gray-300/40'
+                }`}
+              >
+                PM In
+              </button>
+
+              <button
+                onClick={() => { setSessionType('afternoon'); setScanMode('out') }}
+                className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                  sessionType === 'afternoon' && scanMode === 'out'
+                    ? 'bg-red-600 text-white shadow-sm'
+                    : 'text-gray-700 hover:bg-gray-300/40'
+                }`}
+              >
+                PM Out
+              </button>
             </div>
-            <div className="flex gap-2">
-              <button
-                onClick={async () => {
-                  setSessionType('morning')
-                  setScanMode('in')
-                  try { if (!scanning) await startScanning() } catch (e) { console.warn('startScanning failed', e) }
-                }}
-                className={`px-4 py-2 rounded ${sessionType === 'morning' && scanMode === 'in' ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-              >
-                Morning Time In
-              </button>
-
-              <button
-                onClick={async () => {
-                  setSessionType('morning')
-                  setScanMode('out')
-                  try { if (!scanning) await startScanning() } catch (e) { console.warn('startScanning failed', e) }
-                }}
-                className={`px-4 py-2 rounded ${sessionType === 'morning' && scanMode === 'out' ? 'bg-red-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-              >
-                Morning Time Out
-              </button>
-
-              <button
-                onClick={async () => {
-                  setSessionType('afternoon')
-                  setScanMode('in')
-                  try { if (!scanning) await startScanning() } catch (e) { console.warn('startScanning failed', e) }
-                }}
-                className={`px-4 py-2 rounded ${sessionType === 'afternoon' && scanMode === 'in' ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-              >
-                Afternoon Time In
-              </button>
-
-              <button
-                onClick={async () => {
-                  setSessionType('afternoon')
-                  setScanMode('out')
-                  try { if (!scanning) await startScanning() } catch (e) { console.warn('startScanning failed', e) }
-                }}
-                className={`px-4 py-2 rounded ${sessionType === 'afternoon' && scanMode === 'out' ? 'bg-red-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-              >
-                Afternoon Time Out
-              </button>
-            </div>
+            
+            <p className="text-center text-xs text-gray-500 font-medium">
+              Currently setting: <span className="font-bold text-gray-800 uppercase">
+                {scanMode === 'auto' ? 'Auto-detect In/Out' : `${sessionType} time ${scanMode}`}
+              </span>
+            </p>
           </div>
 
-          {message && (
-            <div className={`mt-6 p-4 rounded-lg text-center ${message.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-              {message.text}
-            </div>
-          )}
-          {toast && (
-            <div className="fixed bottom-6 right-6 bg-white shadow-md rounded-lg p-3 flex items-center gap-3">
-              <div className="text-sm">{toast.text}</div>
-              {toast.action && (
-                <button onClick={toast.action} className="ml-2 px-3 py-1 bg-blue-600 text-white rounded text-sm">{toast.actionLabel || 'Action'}</button>
+          {/* Camera Viewport Area */}
+          <div className="flex flex-col items-center">
+            
+            <div className="relative w-full max-w-sm aspect-square overflow-hidden rounded-2xl border-4 border-gray-900 bg-black shadow-xl">
+              
+              <video
+                ref={videoRef}
+                className="w-full h-full object-cover"
+                playsInline
+                muted
+                autoPlay
+              />
+
+              {/* Scanning Target Crosshairs */}
+              <div className="absolute inset-0 pointer-events-none border border-white/10 flex items-center justify-center">
+                
+                {/* Neon sweep line */}
+                {scanning && !isProcessing && (
+                  <div className="absolute inset-x-4 h-0.5 bg-green-500 opacity-80 shadow-[0_0_8px_#22c55e] laser-sweep" />
+                )}
+
+                {/* Grid indicator brackets */}
+                <div className="absolute top-6 left-6 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-lg" />
+                <div className="absolute top-6 right-6 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-lg" />
+                <div className="absolute bottom-6 left-6 w-8 h-8 border-b-4 border-l-4 border-blue-500 rounded-bl-lg" />
+                <div className="absolute bottom-6 right-6 w-8 h-8 border-b-4 border-r-4 border-blue-500 rounded-br-lg" />
+                
+                {/* Center scan zone guide */}
+                <div className="w-48 h-48 border border-dashed border-white/20 rounded-xl" />
+              </div>
+
+              {/* Processing Loading Spinner Over Video */}
+              {isProcessing && (
+                <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-3">
+                  <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+                  <span className="text-white text-xs font-semibold tracking-wider uppercase animate-pulse">Recording...</span>
+                </div>
               )}
-              <button onClick={() => setToast(null)} className="ml-2 text-xs text-gray-500">Dismiss</button>
+
+              {/* Camera Offline State */}
+              {!scanning && (
+                <div className="absolute inset-0 bg-gray-900 flex flex-col items-center justify-center text-center p-6 gap-3">
+                  <div className="p-3 bg-gray-800 rounded-full text-gray-500">
+                    <Camera size={36} />
+                  </div>
+                  <div>
+                    <h4 className="text-white font-bold text-sm">Scanner Offline</h4>
+                    <p className="text-gray-400 text-xs mt-1 max-w-[200px] mx-auto">Select an event and tap start scanning to open camera.</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Quick Toggle Controls */}
+            <div className="mt-4 w-full max-w-sm flex gap-3">
+              {!scanning ? (
+                <button
+                  onClick={startScanning}
+                  className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2"
+                  disabled={!events.length}
+                >
+                  <Camera size={18} /> Start Scanner
+                </button>
+              ) : (
+                <button
+                  onClick={stopScanning}
+                  className="flex-1 py-3 bg-red-600 hover:bg-red-700 active:scale-98 text-white font-bold rounded-xl shadow-md transition-all"
+                >
+                  Stop Scanner
+                </button>
+              )}
+
+              {devices.length > 1 && scanning && (
+                <button 
+                  onClick={switchCamera} 
+                  className="px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-xl flex items-center justify-center transition-colors"
+                  title="Switch Camera"
+                >
+                  <RefreshCw size={18} />
+                </button>
+              )}
+            </div>
+
+            {/* Quick mobile permission trigger */}
+            {!cameraAllowed && hasGetUserMediaCompat && (
+              <button
+                onClick={async () => {
+                  try {
+                    const constraints = { video: { facingMode: { ideal: 'environment' } } }
+                    const s = await navigator.mediaDevices.getUserMedia(constraints)
+                    s.getTracks().forEach((t) => t.stop())
+                    setCameraAllowed(true)
+                    setPermissionDenied(false)
+                    startScanning()
+                  } catch (err) {
+                    setPermissionDenied(true)
+                    setMessage({ text: 'Camera access permission denied.', type: 'error' })
+                  }
+                }}
+                className="mt-3 text-xs text-blue-600 font-bold hover:underline"
+              >
+                Force Camera Permission Prompt
+              </button>
+            )}
+          </div>
+
+          {/* Feedback messages */}
+          {message && (
+            <div className={`p-4 rounded-xl border flex items-start gap-3 transition-all animate-fadeIn ${
+              message.type === 'success' 
+                ? 'bg-green-50 border-green-200 text-green-800' 
+                : 'bg-red-50 border-red-200 text-red-800'
+            }`}>
+              <div className="mt-0.5">
+                {message.type === 'success' ? <CheckCircle size={18} /> : <AlertCircle size={18} />}
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-semibold tracking-wide">{message.text}</p>
+              </div>
             </div>
           )}
 
+          {/* Last Scanned Student Card */}
           {scannedStudent && (
-            <div className="mt-6 bg-white rounded-lg shadow-md p-6">
-              <h3 className="text-lg font-semibold mb-4">Last Scanned Student</h3>
+            <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm flex flex-col gap-4 animate-fadeIn">
+              <div className="flex items-center justify-between border-b pb-2">
+                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Last Scanned Student</h3>
+                <span className={`px-2 py-0.5 text-[10px] font-extrabold rounded-full ${
+                  scannedAttendance?.status === 'PRESENT' 
+                    ? 'bg-green-100 text-green-800' 
+                    : scannedAttendance?.status === 'LATE'
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-red-100 text-red-800'
+                }`}>
+                  {scannedAttendance?.status}
+                </span>
+              </div>
+              
               <div className="flex items-center gap-4">
                 {scannedStudent.photo ? (
-                  <img src={scannedStudent.photo} alt={scannedStudent.name} className="w-20 h-20 rounded-full object-cover" />
+                  <img 
+                    src={scannedStudent.photo} 
+                    alt={scannedStudent.name} 
+                    className="w-16 h-16 rounded-full object-cover ring-2 ring-gray-100 shadow-inner" 
+                  />
                 ) : (
-                  <div className="w-20 h-20 rounded-full bg-gray-300 flex items-center justify-center text-gray-600 text-3xl">
+                  <div className="w-16 h-16 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-2xl shadow-inner border border-blue-200">
                     {scannedStudent.name.charAt(0)}
                   </div>
                 )}
-                <div>
-                  <p className="text-xl font-medium">{scannedStudent.name}</p>
-                  <p className="text-gray-600 mb-2">{scannedAttendance?.status ?? '—'}</p>
-                  <div className="text-sm text-gray-600">
-                    <p><span className="font-medium">Time In:</span> {scannedAttendance?.scannedAt ? new Date(scannedAttendance.scannedAt).toLocaleString() : '—'}</p>
-                    <p><span className="font-medium">Time Out:</span> {scannedAttendance?.timeOut ? new Date(scannedAttendance.timeOut).toLocaleString() : 'Not available yet'}</p>
+                
+                <div className="flex-1 min-w-0">
+                  <h4 className="font-bold text-gray-900 truncate text-base">{scannedStudent.name}</h4>
+                  <p className="text-xs text-gray-500 font-medium">ID: {scannedStudent.studentId} • Course: {scannedStudent.course || 'Unassigned'}</p>
+                  
+                  <div className="mt-2 text-xs text-gray-600 flex flex-col gap-0.5">
+                    <p>
+                      <span className="font-semibold text-gray-700">Time In:</span>{' '}
+                      {scannedAttendance?.scannedAt ? new Date(scannedAttendance.scannedAt).toLocaleTimeString() : '—'}
+                    </p>
+                    <p>
+                      <span className="font-semibold text-gray-700">Time Out:</span>{' '}
+                      {scannedAttendance?.timeOut ? new Date(scannedAttendance.timeOut).toLocaleTimeString() : 'Not timed out yet'}
+                    </p>
                   </div>
                 </div>
               </div>
             </div>
           )}
-          {confirming && confirmStudent && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-              <div className="bg-white rounded-lg p-6 w-full max-w-md">
-                <h3 className="text-lg font-semibold mb-4">{confirmAction === 'out' ? 'Confirm Time Out' : 'Confirm Time In'}</h3>
-                <p className="mb-4">{confirmAction === 'out' ? `Record time-out for ` : `Record time-in for `}<strong>{confirmStudent.name}</strong>?</p>
-                <div className="flex gap-2">
-                  <button onClick={() => confirmTimeOut(false)} className="flex-1 bg-gray-300 px-4 py-2 rounded">Cancel</button>
-                  <button onClick={() => confirmTimeOut(true)} className={`flex-1 px-4 py-2 rounded ${confirmAction === 'out' ? 'bg-red-600 text-white' : 'bg-green-600 text-white'}`}>{confirmAction === 'out' ? 'Confirm Time Out' : 'Confirm Time In'}</button>
+
+          {/* Diagnostics Modal */}
+          {showDiagnosticsModal && diagnostics && (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
+                <h3 className="text-lg font-bold border-b pb-2 mb-3">System Diagnostics</h3>
+                <pre className="text-[10px] font-mono bg-gray-50 p-3 rounded-lg overflow-auto flex-1">{JSON.stringify(diagnostics, null, 2)}</pre>
+                <div className="flex gap-2 mt-4">
+                  <button 
+                    onClick={() => { navigator.clipboard?.writeText(JSON.stringify(diagnostics)).catch(()=>{}); alert('Copied!') }} 
+                    className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-sm"
+                  >
+                    Copy JSON
+                  </button>
+                  <button 
+                    onClick={() => setShowDiagnosticsModal(false)} 
+                    className="flex-1 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold rounded-lg text-sm"
+                  >
+                    Close
+                  </button>
                 </div>
               </div>
             </div>
           )}
+
         </div>
       </main>
     </div>
