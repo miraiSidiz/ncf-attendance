@@ -153,7 +153,7 @@ export async function POST(request: Request) {
       // in this event that has no timeOut (likely the one we should time-out).
       // This makes the system more tolerant of session detection edge-cases
       // (timezones, misconfigured session windows, or client/session mismatches).
-      let target = existing
+      let target: any = existing
       if (!target) {
         if (requestedSessionType) {
           // For explicit outs, look up attendance for the requested sessionType
