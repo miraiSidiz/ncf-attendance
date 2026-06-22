@@ -23,9 +23,9 @@ export async function GET(request: Request) {
       orderBy: { startDate: 'desc' }
     })
     return NextResponse.json(events)
-  } catch (error) {
+  } catch (error: any) {
     console.error(error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error', details: error.message || String(error) }, { status: 500 })
   }
 }
 
@@ -75,9 +75,9 @@ export async function POST(request: Request) {
 
     const event = await prisma.event.create({ data })
     return NextResponse.json(event)
-  } catch (error) {
+  } catch (error: any) {
     console.error(error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error', details: error.message || String(error) }, { status: 500 })
   }
 }
 
@@ -136,9 +136,9 @@ export async function PATCH(request: Request) {
     })
 
     return NextResponse.json(updated)
-  } catch (error) {
+  } catch (error: any) {
     console.error(error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error', details: error.message || String(error) }, { status: 500 })
   }
 }
 
@@ -166,8 +166,8 @@ export async function DELETE(request: Request) {
 
     await prisma.event.delete({ where: { id } })
     return NextResponse.json({ success: true })
-  } catch (error) {
+  } catch (error: any) {
     console.error(error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error', details: error.message || String(error) }, { status: 500 })
   }
 }

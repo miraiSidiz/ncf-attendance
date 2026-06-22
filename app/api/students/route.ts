@@ -5,9 +5,9 @@ export async function GET() {
   try {
     const students = await prisma.student.findMany()
     return NextResponse.json(students)
-  } catch (error) {
+  } catch (error: any) {
     console.error(error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error', details: error.message || String(error) }, { status: 500 })
   }
 }
 
@@ -49,8 +49,8 @@ export async function POST(request: Request) {
       }
     })
     return NextResponse.json(student)
-  } catch (error) {
+  } catch (error: any) {
     console.error(error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error', details: error.message || String(error) }, { status: 500 })
   }
 }

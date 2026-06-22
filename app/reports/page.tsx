@@ -47,7 +47,12 @@ export default function ReportsPage() {
     try {
       const res = await fetch('/api/events')
       const data = await res.json()
-      setEvents(data)
+      if (Array.isArray(data)) {
+        setEvents(data)
+      } else {
+        console.error('Expected array of events, got:', data)
+        setEvents([])
+      }
     } catch (error) {
       console.error(error)
     }
@@ -66,7 +71,12 @@ export default function ReportsPage() {
     try {
       const res = await fetch(`/api/reports?eventId=${selectedEvent}`)
       const data = await res.json()
-      setReport(data.report)
+      if (data && Array.isArray(data.report)) {
+        setReport(data.report)
+      } else {
+        console.error('Expected array for report, got:', data)
+        setReport([])
+      }
     } catch (error) {
       console.error(error)
     } finally {

@@ -49,7 +49,13 @@ export default function StudentsPage() {
     try {
       const res = await fetch('/api/students')
       const data = await res.json()
-      setStudents(data)
+      if (Array.isArray(data)) {
+        setStudents(data)
+      } else {
+        console.error('Expected array of students, got:', data)
+        setStudents([])
+        alert(data.details ? `Failed to load students: ${data.details}` : `Failed to load students: ${data.error || 'Unknown error'}`)
+      }
     } catch (error) {
       console.error(error)
     } finally {

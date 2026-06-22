@@ -51,9 +51,15 @@ export default function DashboardPage() {
     try {
       const res = await fetch('/api/events')
       const data = await res.json()
-      setEvents(data)
-      if (data.length > 0) {
-        setSelectedEventId(data[0].id)
+      if (Array.isArray(data)) {
+        setEvents(data)
+        if (data.length > 0) {
+          setSelectedEventId(data[0].id)
+        }
+      } else {
+        console.error('Expected array of events, got:', data)
+        setEvents([])
+        alert(data.details ? `Failed to load events: ${data.details}` : `Failed to load events: ${data.error || 'Unknown error'}`)
       }
     } catch (error) {
       console.error(error)
@@ -64,7 +70,12 @@ export default function DashboardPage() {
     try {
       const res = await fetch('/api/students')
       const data = await res.json()
-      setStudents(data)
+      if (Array.isArray(data)) {
+        setStudents(data)
+      } else {
+        console.error('Expected array of students, got:', data)
+        setStudents([])
+      }
     } catch (error) {
       console.error(error)
     }
@@ -75,7 +86,12 @@ export default function DashboardPage() {
     try {
       const res = await fetch(`/api/attendance?eventId=${eventId}`)
       const data = await res.json()
-      setAttendances(data)
+      if (Array.isArray(data)) {
+        setAttendances(data)
+      } else {
+        console.error('Expected array of attendances, got:', data)
+        setAttendances([])
+      }
     } catch (error) {
       console.error(error)
     }

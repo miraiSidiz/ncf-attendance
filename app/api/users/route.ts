@@ -13,9 +13,9 @@ export async function GET() {
       }
     })
     return NextResponse.json(users)
-  } catch (error) {
+  } catch (error: any) {
     console.error(error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error', details: error.message || String(error) }, { status: 500 })
   }
 }
 
@@ -45,8 +45,8 @@ export async function POST(request: Request) {
       username: user.username,
       role: user.role
     })
-  } catch (error) {
+  } catch (error: any) {
     console.error(error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error', details: error.message || String(error) }, { status: 500 })
   }
 }
