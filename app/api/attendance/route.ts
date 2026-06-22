@@ -321,7 +321,15 @@ export async function DELETE(request: Request) {
     // validate admin session/token
     const token = await getToken({ req: request as any, secret: process.env.NEXTAUTH_SECRET })
     if (!token || (token.role !== 'ADMIN' && token.role !== 'admin')) {
-      return NextResponse.json({ error: 'Unauthorized - admin required' }, { status: 403 })
+      return NextResponse.json({ 
+        error: 'Unauthorized - admin required',
+        debug: {
+          hasToken: !!token,
+          role: token?.role || null,
+          username: token?.name || token?.email || token?.username || null,
+          tokenKeys: token ? Object.keys(token) : []
+        }
+      }, { status: 403 })
     }
 
     // If caller requested deletion by eventId instead of single attendance id, handle bulk delete
