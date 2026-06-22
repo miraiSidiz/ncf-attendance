@@ -318,8 +318,15 @@ export async function DELETE(request: Request) {
     if (!attendanceId && !eventIdToDelete) return NextResponse.json({ error: 'Missing attendance id or eventId' }, { status: 400 })
     if (!reason || String(reason).trim().length === 0) return NextResponse.json({ error: 'Missing deletion reason' }, { status: 400 })
 
-    // validate admin session/token
-    const token = await getToken({ req: request as any, secret: process.env.NEXTAUTH_SECRET })
+    // validate admin session/token (handle Vercel proxy secure cookie mismatch)
+    const cookieHeader = request.headers.get('cookie') || ''
+    const useSecure = cookieHeader.includes('__Secure-next-auth.session-token')
+    const token = await getToken({ 
+      req: request as any, 
+      secret: process.env.NEXTAUTH_SECRET,
+      secureCookie: useSecure,
+      cookieName: useSecure ? '__Secure-next-auth.session-token' : 'next-auth.session-token'
+    })
     if (!token || (token.role !== 'ADMIN' && token.role !== 'admin')) {
       return NextResponse.json({ 
         error: 'Unauthorized - admin required',
