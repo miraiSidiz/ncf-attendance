@@ -27,17 +27,14 @@ export async function POST(request: Request) {
     const { qrCode, eventId, action, sessionType: requestedSessionType } = await request.json()
     console.log('POST /api/attendance received:', { qrCode, eventId, action, requestedSessionType, at: new Date().toISOString() })
     
-    const student = await prisma.student.findFirst({
-      where: { qrCode }
-    })
+    const [student, event] = await Promise.all([
+      prisma.student.findFirst({ where: { qrCode } }),
+      prisma.event.findUnique({ where: { id: eventId } })
+    ])
 
     if (!student) {
       return NextResponse.json({ error: 'Student not found' }, { status: 404 })
     }
-
-    const event = await prisma.event.findUnique({
-      where: { id: eventId }
-    })
 
     if (!event) {
       return NextResponse.json({ error: 'Event not found' }, { status: 404 })
@@ -65,8 +62,7 @@ export async function POST(request: Request) {
           eventId: eventId,
           sessionType: sessionType
         }
-      },
-      include: { event: true }
+      }
     })
 
     // Late if scanned > 30 min after session starts
@@ -86,17 +82,8 @@ export async function POST(request: Request) {
       console.log('Handling explicit time-in', { student: student.id, eventId, requestedSessionType, sessionType })
 
       // Ensure we only check/create the attendance for the resolved sessionType (no cross-session creates)
-      const existingForSession = await prisma.attendance.findUnique({
-        where: {
-          studentId_eventId_sessionType: {
-            studentId: student.id,
-            eventId: eventId,
-            sessionType: sessionType
-          }
-        }
-      })
-
-      if (existingForSession && existingForSession.scannedAt) {
+      // Reuse the existing query we ran at the start of the handler to save a database round-trip
+      if (existing && existing.scannedAt) {
         return NextResponse.json({ error: `Student already timed in for ${sessionType} session` }, { status: 400 })
       }
 
@@ -123,8 +110,7 @@ export async function POST(request: Request) {
             sessionType,
             status,
             scannedAt: now
-          },
-          include: { student: true, event: true }
+          }
         })
       } catch (e: any) {
         // Handle unique constraint race: if another request created it concurrently, return friendly error
@@ -244,8 +230,7 @@ export async function POST(request: Request) {
           sessionType,
           status,
           scannedAt: now
-        },
-        include: { student: true, event: true }
+        }
       })
 
       // audit log for auto-created attendance

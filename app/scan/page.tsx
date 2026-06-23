@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
 import { useSession } from 'next-auth/react'
 import { BrowserMultiFormatReader, NotFoundException } from '@zxing/library'
-import { Settings, RefreshCw, Activity, Upload, Camera, CheckCircle, AlertCircle } from 'lucide-react'
+import { Settings, RefreshCw, Activity, Upload, Camera, CheckCircle, AlertCircle, List } from 'lucide-react'
 
 interface Event {
   id: string
@@ -31,6 +31,16 @@ interface Attendance {
   createdAt: string
 }
 
+interface ScanHistoryEntry {
+  id: number
+  studentName: string
+  studentId: string
+  action: string
+  status: 'success' | 'error'
+  message: string
+  time: string
+}
+
 export default function ScanPage() {
   const { data: session, status } = useSession()
   const [events, setEvents] = useState<Event[]>([])
@@ -54,6 +64,7 @@ export default function ScanPage() {
   const [showSettings, setShowSettings] = useState<boolean>(false)
   const [deviceProbeResults, setDeviceProbeResults] = useState<Record<string, string>>({})
   const [notFoundCount, setNotFoundCount] = useState(0)
+  const [scanHistory, setScanHistory] = useState<ScanHistoryEntry[]>([])
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null)
@@ -227,25 +238,73 @@ export default function ScanPage() {
         })
       })
 
+      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
       if (res.ok) {
         const data = await res.json()
         setScannedStudent(data.student)
         setScannedAttendance(data.attendance)
 
-        const acted = data.attendance?.timeOut ? 'Time-out recorded' : 'Attendance recorded'
-        setMessage({ text: `${acted} for ${data.student.name}`, type: 'success' })
+        const acted = data.attendance?.timeOut ? 'Time-out' : 'Time-in'
+        const sessionLabel = data.attendance?.sessionType === 'morning' ? 'AM' : 'PM'
+        const successLabel = `${acted} (${sessionLabel})`
+        setMessage({ text: `${successLabel} recorded for ${data.student.name}`, type: 'success' })
         
+        // Add to live scanner history ticker
+        setScanHistory(prev => [
+          {
+            id: Date.now(),
+            studentName: data.student.name,
+            studentId: data.student.studentId,
+            action: successLabel,
+            status: 'success',
+            message: 'Recorded successfully',
+            time: timestamp
+          },
+          ...prev.slice(0, 4)
+        ])
+
         playBeep('success')
         try { if (typeof navigator !== 'undefined' && (navigator as any).vibrate) (navigator as any).vibrate([60, 50, 60]) } catch (e) {}
       } else {
         const data = await res.json()
         setMessage({ text: data.error || 'Failed to record attendance', type: 'error' })
+        
+        // Add failure to live scanner history ticker
+        setScanHistory(prev => [
+          {
+            id: Date.now(),
+            studentName: 'Invalid / Error Scan',
+            studentId: qrCode.slice(0, 15) + (qrCode.length > 15 ? '...' : ''),
+            action: `${currentScanMode === 'auto' ? 'Auto' : currentScanMode.toUpperCase()} (${currentSessionType === 'morning' ? 'AM' : 'PM'})`,
+            status: 'error',
+            message: data.error || 'Failed to record',
+            time: timestamp
+          },
+          ...prev.slice(0, 4)
+        ])
+
         playBeep('error')
         try { if (typeof navigator !== 'undefined' && (navigator as any).vibrate) (navigator as any).vibrate(250) } catch (e) {}
       }
     } catch (error) {
       console.error(error)
       setMessage({ text: 'Network error. Failed to record attendance.', type: 'error' })
+      
+      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      setScanHistory(prev => [
+        {
+          id: Date.now(),
+          studentName: 'Network Error',
+          studentId: '—',
+          action: 'API Call',
+          status: 'error',
+          message: 'Connection failed',
+          time: timestamp
+        },
+        ...prev.slice(0, 4)
+      ])
+      
       playBeep('error')
     } finally {
       // Release scanner processing lock after 1.2 seconds, camera keeps running
@@ -875,6 +934,45 @@ export default function ScanPage() {
               </div>
             </div>
           )}
+
+          {/* Scan History Ticker (Recent Scans) */}
+          <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm flex flex-col gap-3">
+            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider border-b pb-2 flex items-center gap-2">
+              <List size={14} /> Recent Scans (Last 5)
+            </h3>
+            {scanHistory.length === 0 ? (
+              <p className="text-xs text-gray-400 text-center py-4">No scans recorded in this session yet.</p>
+            ) : (
+              <div className="flex flex-col gap-2 divide-y divide-gray-100">
+                {scanHistory.map((h) => (
+                  <div key={h.id} className="pt-2 first:pt-0 flex items-center justify-between text-xs gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="font-bold text-gray-800 truncate">
+                        {h.studentName} <span className="text-[10px] text-gray-400 font-normal">({h.studentId})</span>
+                      </p>
+                      <p className="text-[10px] text-gray-500 mt-0.5">
+                        {h.action} • {h.time}
+                      </p>
+                    </div>
+                    <div className="ml-3 flex flex-col items-end shrink-0">
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold ${
+                        h.status === 'success' 
+                          ? 'bg-green-100 text-green-800' 
+                          : 'bg-red-100 text-red-800'
+                      }`}>
+                        {h.status === 'success' ? 'SUCCESS' : 'FAILED'}
+                      </span>
+                      {h.status === 'error' && (
+                        <span className="text-[9px] text-red-500 font-medium mt-0.5 text-right max-w-[150px] truncate" title={h.message}>
+                          {h.message}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Diagnostics Modal */}
           {showDiagnosticsModal && diagnostics && (
