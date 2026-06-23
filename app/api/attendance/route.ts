@@ -91,11 +91,11 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `Student already timed in for ${sessionType} session` }, { status: 400 })
       }
 
-      // Defensive: if there is an open attendance in a different session (no timeOut), do not create another session record.
-      const openOther = await prisma.attendance.findFirst({ where: { studentId: student.id, eventId, timeOut: null } })
-      if (openOther && openOther.sessionType !== sessionType) {
-        return NextResponse.json({ error: `Existing open attendance found for ${openOther.sessionType} session; close it before creating ${sessionType} in.` }, { status: 400 })
-      }
+      // Defensive check bypassed: Allow afternoon scans even if the student did not log out of the morning session
+      // const openOther = await prisma.attendance.findFirst({ where: { studentId: student.id, eventId, timeOut: null } })
+      // if (openOther && openOther.sessionType !== sessionType) {
+      //   return NextResponse.json({ error: `Existing open attendance found for ${openOther.sessionType} session; close it before creating ${sessionType} in.` }, { status: 400 })
+      // }
 
       // Auto-set time-out based on session (prefer event-specific end times)
       let autoTimeOut = null
