@@ -49,7 +49,9 @@ export async function POST(request: Request) {
 
     // Use event-specific session windows when available, otherwise fall back to defaults
     const morningEnd = event.morningEnd ? new Date(event.morningEnd) : (() => { const d = new Date(now); d.setHours(12,0,0,0); return d })()
-    const afternoonStart = event.afternoonStart ? new Date(event.afternoonStart) : (() => { const d = new Date(now); d.setHours(13,0,0,0); return d })()
+    const rawAfternoonStart = event.afternoonStart ? new Date(event.afternoonStart) : (() => { const d = new Date(now); d.setHours(13,0,0,0); return d })()
+    const afternoonStart = new Date(now)
+    afternoonStart.setHours(rawAfternoonStart.getHours(), rawAfternoonStart.getMinutes(), rawAfternoonStart.getSeconds(), rawAfternoonStart.getMilliseconds())
     const afternoonEnd = event.afternoonEnd ? new Date(event.afternoonEnd) : (() => { const d = new Date(now); d.setHours(17,0,0,0); return d })()
 
     // Determine session type from request or by comparing now with session windows
@@ -67,10 +69,17 @@ export async function POST(request: Request) {
       include: { event: true }
     })
 
-    // Late if scanned > 30 min after event startDate
-    const thirtyMinAfterStart = new Date(startDate.getTime() + 30 * 60 * 1000)
+    // Late if scanned > 30 min after session starts
     let status = 'PRESENT'
-    if (now > thirtyMinAfterStart) status = 'LATE'
+    if (sessionType === 'morning') {
+      const morningStart = new Date(now)
+      morningStart.setHours(startDate.getHours(), startDate.getMinutes(), startDate.getSeconds(), startDate.getMilliseconds())
+      const thirtyMinAfterMorningStart = new Date(morningStart.getTime() + 30 * 60 * 1000)
+      if (now > thirtyMinAfterMorningStart) status = 'LATE'
+    } else if (sessionType === 'afternoon') {
+      const thirtyMinAfterAfternoonStart = new Date(afternoonStart.getTime() + 30 * 60 * 1000)
+      if (now > thirtyMinAfterAfternoonStart) status = 'LATE'
+    }
 
     // Explicit time-in requested
     if (action === 'in') {
