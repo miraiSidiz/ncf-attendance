@@ -41,18 +41,34 @@ export async function POST(request: Request) {
     }
 
     const now = new Date()
-    const startDate = new Date(event.startDate)
-    const endDate = new Date(event.endDate)
+    // Shift all times to Philippine Standard Time (UTC+8) to prevent server/client timezone mismatches
+    const phNow = new Date(now.getTime() + 8 * 60 * 60 * 1000)
+    const phStartDate = new Date(new Date(event.startDate).getTime() + 8 * 60 * 60 * 1000)
 
-    // Use event-specific session windows when available, otherwise fall back to defaults
-    const morningEnd = event.morningEnd ? new Date(event.morningEnd) : (() => { const d = new Date(now); d.setHours(12,0,0,0); return d })()
-    const rawAfternoonStart = event.afternoonStart ? new Date(event.afternoonStart) : (() => { const d = new Date(now); d.setHours(13,0,0,0); return d })()
-    const afternoonStart = new Date(now)
-    afternoonStart.setHours(rawAfternoonStart.getHours(), rawAfternoonStart.getMinutes(), rawAfternoonStart.getSeconds(), rawAfternoonStart.getMilliseconds())
-    const afternoonEnd = event.afternoonEnd ? new Date(event.afternoonEnd) : (() => { const d = new Date(now); d.setHours(17,0,0,0); return d })()
+    // Default session windows in PH time
+    const phMorningEnd = event.morningEnd 
+      ? new Date(new Date(event.morningEnd).getTime() + 8 * 60 * 60 * 1000) 
+      : (() => { const d = new Date(phNow); d.setUTCHours(12,0,0,0); return d })()
 
-    // Determine session type from request or by comparing now with session windows
-    let sessionType = requestedSessionType || (now >= afternoonStart ? 'afternoon' : 'morning')
+    const phAfternoonStart = event.afternoonStart 
+      ? new Date(new Date(event.afternoonStart).getTime() + 8 * 60 * 60 * 1000) 
+      : (() => { const d = new Date(phNow); d.setUTCHours(13,0,0,0); return d })()
+
+    const phAfternoonEnd = event.afternoonEnd 
+      ? new Date(new Date(event.afternoonEnd).getTime() + 8 * 60 * 60 * 1000) 
+      : (() => { const d = new Date(phNow); d.setUTCHours(17,0,0,0); return d })()
+
+    // Align afternoon start time to the current date in PH time
+    const afternoonStartToday = new Date(phNow)
+    afternoonStartToday.setUTCHours(
+      phAfternoonStart.getUTCHours(), 
+      phAfternoonStart.getUTCMinutes(), 
+      phAfternoonStart.getUTCSeconds(), 
+      phAfternoonStart.getUTCMilliseconds()
+    )
+
+    // Determine session type from request or by comparing PH now with PH afternoon start
+    let sessionType = requestedSessionType || (phNow >= afternoonStartToday ? 'afternoon' : 'morning')
 
     // Check for existing time-in for this session
     const existing = await prisma.attendance.findUnique({
@@ -68,13 +84,18 @@ export async function POST(request: Request) {
     // Late if scanned > 30 min after session starts
     let status = 'PRESENT'
     if (sessionType === 'morning') {
-      const morningStart = new Date(now)
-      morningStart.setHours(startDate.getHours(), startDate.getMinutes(), startDate.getSeconds(), startDate.getMilliseconds())
-      const thirtyMinAfterMorningStart = new Date(morningStart.getTime() + 30 * 60 * 1000)
-      if (now > thirtyMinAfterMorningStart) status = 'LATE'
+      const morningStartToday = new Date(phNow)
+      morningStartToday.setUTCHours(
+        phStartDate.getUTCHours(), 
+        phStartDate.getUTCMinutes(), 
+        phStartDate.getUTCSeconds(), 
+        phStartDate.getUTCMilliseconds()
+      )
+      const thirtyMinAfterMorningStart = new Date(morningStartToday.getTime() + 30 * 60 * 1000)
+      if (phNow > thirtyMinAfterMorningStart) status = 'LATE'
     } else if (sessionType === 'afternoon') {
-      const thirtyMinAfterAfternoonStart = new Date(afternoonStart.getTime() + 30 * 60 * 1000)
-      if (now > thirtyMinAfterAfternoonStart) status = 'LATE'
+      const thirtyMinAfterAfternoonStart = new Date(afternoonStartToday.getTime() + 30 * 60 * 1000)
+      if (phNow > thirtyMinAfterAfternoonStart) status = 'LATE'
     }
 
     // Explicit time-in requested
@@ -96,9 +117,9 @@ export async function POST(request: Request) {
       // Auto-set time-out based on session (prefer event-specific end times)
       let autoTimeOut = null
       if (sessionType === 'morning') {
-        autoTimeOut = event.morningEnd ? new Date(event.morningEnd) : morningEnd
+        autoTimeOut = event.morningEnd ? new Date(event.morningEnd) : phMorningEnd
       } else if (sessionType === 'afternoon') {
-        autoTimeOut = event.afternoonEnd ? new Date(event.afternoonEnd) : afternoonEnd
+        autoTimeOut = event.afternoonEnd ? new Date(event.afternoonEnd) : phAfternoonEnd
       }
 
       let attendance: any = null
@@ -215,12 +236,12 @@ export async function POST(request: Request) {
 
     // Auto behaviour
     if (!existing) {
-      // Auto time-out based on session (prefer event-provided end times)
+      // Auto-time-out based on session (prefer event-provided end times)
       let autoTimeOut = null
       if (sessionType === 'morning') {
-        autoTimeOut = event.morningEnd ? new Date(event.morningEnd) : morningEnd
+        autoTimeOut = event.morningEnd ? new Date(event.morningEnd) : phMorningEnd
       } else if (sessionType === 'afternoon') {
-        autoTimeOut = event.afternoonEnd ? new Date(event.afternoonEnd) : afternoonEnd
+        autoTimeOut = event.afternoonEnd ? new Date(event.afternoonEnd) : phAfternoonEnd
       }
 
       const attendance = await prisma.attendance.create({

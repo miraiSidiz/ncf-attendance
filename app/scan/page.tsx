@@ -175,12 +175,33 @@ export default function ScanPage() {
         }
       } catch (e) {}
 
+      // Helper to sort cameras by prioritizing back/rear facing ones
+      const sortCameras = (cams: MediaDeviceInfo[]) => {
+        return [...cams].sort((a, b) => {
+          const labelA = (a.label || '').toLowerCase()
+          const labelB = (b.label || '').toLowerCase()
+          // Prioritize labels indicating a back/rear-facing camera
+          const isBackA = labelA.includes('back') || labelA.includes('rear') || labelA.includes('environment') || labelA.includes('main') || labelA.includes('facing b') || labelA.includes('cam 0') || labelA.includes('camera 0')
+          const isBackB = labelB.includes('back') || labelB.includes('rear') || labelB.includes('environment') || labelB.includes('main') || labelB.includes('facing b') || labelB.includes('cam 0') || labelB.includes('camera 0')
+          // Deprioritize labels indicating a front-facing camera
+          const isFrontA = labelA.includes('front') || labelA.includes('selfie') || labelA.includes('facing f') || labelA.includes('cam 1') || labelA.includes('camera 1')
+          const isFrontB = labelB.includes('front') || labelB.includes('selfie') || labelB.includes('facing f') || labelB.includes('cam 1') || labelB.includes('camera 1')
+
+          if (isBackA && !isBackB) return -1
+          if (!isBackA && isBackB) return 1
+          if (isFrontB && !isFrontA) return -1
+          if (isFrontA && !isFrontB) return 1
+          return 0
+        })
+      }
+
       if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
         navigator.mediaDevices.enumerateDevices()
           .then((list) => {
             const cams = list.filter((d) => d.kind === 'videoinput')
-            setDevices(cams)
-            if (cams.length && !deviceId) setDeviceId(cams[0].deviceId)
+            const sortedCams = sortCameras(cams)
+            setDevices(sortedCams)
+            if (sortedCams.length && !deviceId) setDeviceId(sortedCams[0].deviceId)
           })
           .catch((err) => {
             console.error('Could not enumerate devices', err)
@@ -355,11 +376,32 @@ export default function ScanPage() {
     }
 
     const tryDevicesAndStart = async () => {
+      // Helper to sort cameras by prioritizing back/rear facing ones
+      const sortCameras = (cams: MediaDeviceInfo[]) => {
+        return [...cams].sort((a, b) => {
+          const labelA = (a.label || '').toLowerCase()
+          const labelB = (b.label || '').toLowerCase()
+          // Prioritize labels indicating a back/rear-facing camera
+          const isBackA = labelA.includes('back') || labelA.includes('rear') || labelA.includes('environment') || labelA.includes('main') || labelA.includes('facing b') || labelA.includes('cam 0') || labelA.includes('camera 0')
+          const isBackB = labelB.includes('back') || labelB.includes('rear') || labelB.includes('environment') || labelB.includes('main') || labelB.includes('facing b') || labelB.includes('cam 0') || labelB.includes('camera 0')
+          // Deprioritize labels indicating a front-facing camera
+          const isFrontA = labelA.includes('front') || labelA.includes('selfie') || labelA.includes('facing f') || labelA.includes('cam 1') || labelA.includes('camera 1')
+          const isFrontB = labelB.includes('front') || labelB.includes('selfie') || labelB.includes('facing f') || labelB.includes('cam 1') || labelB.includes('camera 1')
+
+          if (isBackA && !isBackB) return -1
+          if (!isBackA && isBackB) return 1
+          if (isFrontB && !isFrontA) return -1
+          if (isFrontA && !isFrontB) return 1
+          return 0
+        })
+      }
+
       try {
         if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
           const list = await navigator.mediaDevices.enumerateDevices()
           const cams = list.filter((d) => d.kind === 'videoinput')
-          setDevices(cams)
+          const sortedCams = sortCameras(cams)
+          setDevices(sortedCams)
         }
       } catch (e) {
         console.error('Could not refresh devices', e)
